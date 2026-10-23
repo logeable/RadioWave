@@ -3,6 +3,7 @@ import SwiftUI
 struct RadioPlayerBar: View {
     @ObservedObject var player: RadioPlayerViewModel
     @ObservedObject var library: RadioLibraryViewModel
+    @FocusState private var hasKeyboardFocus: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -57,12 +58,32 @@ struct RadioPlayerBar: View {
             .disabled(player.currentStation == nil)
             .opacity(player.currentStation == nil ? 0.4 : 1)
 
-            Image(systemName: "speaker.fill").font(.system(size: 10)).foregroundStyle(RadioPalette.muted)
+            Button(action: player.toggleMute) {
+                Image(systemName: player.isMuted ? "speaker.slash.fill" : "speaker.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(player.isMuted ? RadioPalette.accent : RadioPalette.muted)
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .help(player.isMuted ? "取消静音" : "静音")
+            .accessibilityLabel(player.isMuted ? "取消静音" : "静音")
             Slider(value: $player.volume, in: 0...1).tint(RadioPalette.accent).frame(width: 85)
         }
         .padding(.horizontal, 22)
         .frame(height: 54)
         .background(.white)
         .overlay(alignment: .top) { Rectangle().fill(RadioPalette.line).frame(height: 1) }
+        .focusable()
+        .focused($hasKeyboardFocus)
+        .focusEffectDisabled()
+        .onKeyPress(.space) {
+            player.togglePlayback()
+            return .handled
+        }
+        .onAppear {
+            DispatchQueue.main.async {
+                hasKeyboardFocus = true
+            }
+        }
     }
 }

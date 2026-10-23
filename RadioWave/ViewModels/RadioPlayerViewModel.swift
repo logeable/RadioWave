@@ -8,7 +8,10 @@ final class RadioPlayerViewModel: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var nowPlayingTitle: String?
     @Published var volume = 1.0 {
-        didSet { player.volume = Float(volume) }
+        didSet {
+            player.volume = Float(volume)
+            if volume > 0 { lastNonMutedVolume = volume }
+        }
     }
 
     private let player = AVPlayer()
@@ -25,6 +28,9 @@ final class RadioPlayerViewModel: ObservableObject {
     private var accumulatedListeningSeconds: TimeInterval = 0
     private var listeningSegmentStartedAt: TimeInterval?
     private var historyCheckpointTask: Task<Void, Never>?
+    private var lastNonMutedVolume = 1.0
+
+    var isMuted: Bool { volume == 0 }
 
     init(api: RadioBrowserAPI, playbackStore: PlaybackStateStore = PlaybackStateStore()) {
         self.api = api
@@ -106,6 +112,10 @@ final class RadioPlayerViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func toggleMute() {
+        volume = isMuted ? lastNonMutedVolume : 0
     }
 
     private func handlePlayerTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
