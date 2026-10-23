@@ -1,14 +1,16 @@
 import Foundation
+import OSLog
 
 /// Reads the first ICY metadata packet from a stream. The connection is short-lived
 /// so metadata can be refreshed without downloading a second copy of the audio.
 @MainActor
 final class ICYMetadataReader {
+    private let logger = Logger(subsystem: "com.logeable.RadioWave", category: "PlaybackMetadata")
     private var pollingTask: Task<Void, Never>?
     private var activeRequest: ICYMetadataRequest?
     private var generation = UUID()
 
-    func start(url: URL, onTitle: @escaping (String) -> Void) {
+    func start(url: URL, stationUUID: String, onTitle: @escaping (String) -> Void) {
         stop()
         let requestGeneration = generation
 
@@ -16,7 +18,7 @@ final class ICYMetadataReader {
             guard let self else { return }
 
             while !Task.isCancelled, self.generation == requestGeneration {
-                if let title = await self.fetchTitle(from: url, generation: requestGeneration),
+                if let title = await self.fetchTitle(from: url, stationUUID: stationUUID, generation: requestGeneration),
                    !Task.isCancelled,
                    self.generation == requestGeneration {
                     onTitle(title)
@@ -39,9 +41,9 @@ final class ICYMetadataReader {
         activeRequest = nil
     }
 
-    private func fetchTitle(from url: URL, generation requestGeneration: UUID) async -> String? {
+    private func fetchTitle(from url: URL, stationUUID: String, generation requestGeneration: UUID) async -> String? {
         await withCheckedContinuation { continuation in
-            let request = ICYMetadataRequest { [weak self] title in
+            let request = ICYMetadataRequest(stationUUID: stationUUID) { [weak self] title in
                 guard let self, self.generation == requestGeneration else {
                     continuation.resume(returning: nil)
                     return
@@ -56,6 +58,8 @@ final class ICYMetadataReader {
 }
 
 private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
+    private let logger = Logger(subsystem: "com.logeable.RadioWave", category: "PlaybackMetadata")
+    private let stationUUID: String
     private let onCompletion: (String?) -> Void
     private var session: URLSession?
     private var task: URLSessionDataTask?
@@ -66,7 +70,8 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
     private var emptyPacketCount = 0
     private var isCompleted = false
 
-    init(onCompletion: @escaping (String?) -> Void) {
+    init(stationUUID: String, onCompletion: @escaping (String?) -> Void) {
+        self.stationUUID = stationUUID
         self.onCompletion = onCompletion
     }
 
@@ -90,10 +95,17 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
                     dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let response = response as? HTTPURLResponse,
-              (200..<300).contains(response.statusCode),
-              let interval = response.value(forHTTPHeaderField: "icy-metaint").flatMap(Int.init),
+        guard let httpResponse = response as? HTTPURLResponse else {
+            logger.warning("ICY response was not HTTP for station \(self.stationUUID, privacy: .public)")
+            completionHandler(.cancel)
+            finish(with: nil)
+            return
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode),
+              let interval = httpResponse.value(forHTTPHeaderField: "icy-metaint").flatMap(Int.init),
               interval > 0 else {
+            logger.info("ICY metadata unavailable for station \(self.stationUUID, privacy: .public), status=\(httpResponse.statusCode), contentType=\(httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown", privacy: .public)")
             completionHandler(.cancel)
             finish(with: nil)
             return
@@ -101,6 +113,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
 
         metadataInterval = interval
         audioBytesRemaining = interval
+        logger.info("ICY metadata available for station \(self.stationUUID, privacy: .public), interval=\(interval) bytes")
         completionHandler(.allow)
     }
 
@@ -126,6 +139,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
 
                     emptyPacketCount += 1
                     guard emptyPacketCount < 4 else {
+                        logger.debug("No ICY title found in initial packets for station \(self.stationUUID, privacy: .public)")
                         finish(with: nil)
                         return
                     }
@@ -157,6 +171,10 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,
                     didCompleteWithError error: Error?) {
+        guard !isCompleted else { return }
+        if let error {
+            logger.error("ICY request failed for station \(self.stationUUID, privacy: .public): \(error.localizedDescription, privacy: .private)")
+        }
         finish(with: nil)
     }
 

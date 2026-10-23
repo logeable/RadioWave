@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import OSLog
 
 @MainActor
 final class RadioPlayerViewModel: ObservableObject {
@@ -15,6 +16,7 @@ final class RadioPlayerViewModel: ObservableObject {
     private let playbackStore: PlaybackStateStore
     private let historyStore: PlaybackHistoryStore?
     private let icyMetadataReader = ICYMetadataReader()
+    private let metadataLogger = Logger(subsystem: "com.logeable.RadioWave", category: "PlaybackMetadata")
     private var metadataOutput: AVPlayerItemMetadataOutput?
     private var metadataDelegate: RadioStreamMetadataDelegate?
     private var playbackGeneration = UUID()
@@ -60,9 +62,9 @@ final class RadioPlayerViewModel: ObservableObject {
         nowPlayingTitle = nil
         playbackGeneration = UUID()
         let generation = playbackGeneration
-        icyMetadataReader.start(url: streamURL) { [weak self] title in
-            guard self?.playbackGeneration == generation else { return }
-            self?.nowPlayingTitle = title
+        icyMetadataReader.start(url: streamURL, stationUUID: station.stationuuid) { [weak self] title in
+            guard let self, self.playbackGeneration == generation else { return }
+            self.receiveMetadata(title, source: "ICY")
         }
         metadataOutput = nil
         metadataDelegate = nil
@@ -71,14 +73,15 @@ final class RadioPlayerViewModel: ObservableObject {
         let output = AVPlayerItemMetadataOutput(identifiers: nil)
         let delegate = RadioStreamMetadataDelegate { [weak self] title in
             Task { @MainActor [weak self] in
-                guard self?.playbackGeneration == generation else { return }
-                self?.nowPlayingTitle = title
+                guard let self, self.playbackGeneration == generation else { return }
+                self.receiveMetadata(title, source: "AVPlayer")
             }
         }
         output.setDelegate(delegate, queue: .main)
         item.add(output)
         metadataOutput = output
         metadataDelegate = delegate
+        metadataLogger.info("Attached AVPlayer metadata output for station \(station.stationuuid, privacy: .public)")
 
         player.replaceCurrentItem(with: item)
         player.play()
@@ -97,9 +100,9 @@ final class RadioPlayerViewModel: ObservableObject {
             player.play()
             if let streamURL = currentStation.streamURL {
                 let generation = playbackGeneration
-                icyMetadataReader.start(url: streamURL) { [weak self] title in
-                    guard self?.playbackGeneration == generation else { return }
-                    self?.nowPlayingTitle = title
+                icyMetadataReader.start(url: streamURL, stationUUID: currentStation.stationuuid) { [weak self] title in
+                    guard let self, self.playbackGeneration == generation else { return }
+                    self.receiveMetadata(title, source: "ICY")
                 }
             }
         }
@@ -180,7 +183,7 @@ final class RadioPlayerViewModel: ObservableObject {
         historyCheckpointTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(30))
+                    try await Task.sleep(for: .seconds(5))
                 } catch {
                     return
                 }
@@ -188,6 +191,17 @@ final class RadioPlayerViewModel: ObservableObject {
                 self?.persistHistoryCheckpoint()
             }
         }
+    }
+
+    private func receiveMetadata(_ title: String?, source: String) {
+        guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
+            metadataLogger.debug("Metadata event from \(source, privacy: .public) did not contain a title")
+            return
+        }
+
+        let changed = nowPlayingTitle != title
+        metadataLogger.info("Metadata received from \(source, privacy: .public), station=\(self.currentStation?.stationuuid ?? "unknown", privacy: .public), titlePresent=true, changed=\(changed)")
+        nowPlayingTitle = title
     }
 }
 
