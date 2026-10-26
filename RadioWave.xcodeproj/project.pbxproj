@@ -8,6 +8,9 @@
 
 /* Begin PBXFileReference section */
 		300CFAE1308716AB0039E0E3 /* RadioWave.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RadioWave.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		30FE7713308F3E4800955ACA /* radio-toc-ui-reference.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "radio-toc-ui-reference.png"; sourceTree = "<group>"; };
+		30FE7715308F3E4800955ACA /* PRODUCT.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = PRODUCT.md; sourceTree = "<group>"; };
+		30FE7717308F3E4800955ACA /* UI_COMPONENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = UI_COMPONENTS.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +37,7 @@
 			children = (
 				300CFAE3308716AB0039E0E3 /* RadioWave */,
 				300CFAE2308716AB0039E0E3 /* Products */,
+				30FE7716308F3E4800955ACA /* docs */,
 			);
 			sourceTree = "<group>";
 		};
@@ -43,6 +47,24 @@
 				300CFAE1308716AB0039E0E3 /* RadioWave.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		30FE7714308F3E4800955ACA /* assets */ = {
+			isa = PBXGroup;
+			children = (
+				30FE7713308F3E4800955ACA /* radio-toc-ui-reference.png */,
+			);
+			path = assets;
+			sourceTree = "<group>";
+		};
+		30FE7716308F3E4800955ACA /* docs */ = {
+			isa = PBXGroup;
+			children = (
+				30FE7714308F3E4800955ACA /* assets */,
+				30FE7715308F3E4800955ACA /* PRODUCT.md */,
+				30FE7717308F3E4800955ACA /* UI_COMPONENTS.md */,
+			);
+			path = docs;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */

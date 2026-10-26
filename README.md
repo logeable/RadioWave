@@ -1,3 +1,7 @@
+## 产品文档
+
+首个面向个人用户版本的界面定义见 [docs/PRODUCT.md](docs/PRODUCT.md)，可复用组件拆解见 [docs/UI_COMPONENTS.md](docs/UI_COMPONENTS.md)。组件预览可在 Xcode 中打开 `RadioWave/Components/Previews/RadioComponentsPreview.swift` 的 Canvas 查看。
+
 # RadioWave
 
 RadioWave 是一个供个人使用的 macOS 网络电台客户端。电台目录来自 [Radio Browser](https://www.radio-browser.info/)，音频流由各电台提供。
