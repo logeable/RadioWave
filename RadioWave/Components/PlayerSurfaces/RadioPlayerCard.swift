@@ -9,7 +9,6 @@ struct RadioPlayerCard: View {
     var onPlayPause: () -> Void = {}
     var onFavorite: () -> Void = {}
     var onStations: () -> Void = {}
-    var onMini: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 18) {
@@ -17,7 +16,7 @@ struct RadioPlayerCard: View {
                 Spacer()
                 RadioIconButton(systemName: "list.bullet", label: "打开电台列表", action: onStations)
             }
-            StationArtworkView(image: station.artwork, size: 188)
+            StationArtworkView(image: station.artwork, imageURL: station.artworkURL, size: 188)
                 .shadow(color: .black.opacity(0.14), radius: 18, y: 8)
             StationMetadataView(station: station, alignment: .center)
             PlaybackStatusView(status: status)
@@ -25,7 +24,6 @@ struct RadioPlayerCard: View {
             HStack(spacing: 13) {
                 FavoriteButton(isFavorite: isFavorite, action: onFavorite)
                 VolumeControl(volume: $volume)
-                RadioIconButton(systemName: "rectangle.compress.vertical", label: "迷你播放器", action: onMini)
             }
             .padding(.top, 4)
         }

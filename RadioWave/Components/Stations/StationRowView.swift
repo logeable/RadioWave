@@ -11,7 +11,7 @@ struct StationRowView: View {
 
     var body: some View {
         HStack(spacing: 11) {
-            StationArtworkView(image: station.artwork, size: 42)
+            StationArtworkView(image: station.artwork, imageURL: station.artworkURL, size: 42)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
                     Text(station.name)

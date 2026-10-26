@@ -3,8 +3,17 @@ import AppKit
 
 struct StationArtworkView: View {
     var image: Image? = nil
+    var imageURL: URL? = nil
     var size: CGFloat = 48
     var symbol = "dot.radiowaves.left.and.right"
+
+    @State private var loadedImage: NSImage?
+
+    private var displayedImage: Image? {
+        if let image { return image }
+        if let loadedImage { return Image(nsImage: loadedImage) }
+        return nil
+    }
 
     var body: some View {
         ZStack {
@@ -14,8 +23,8 @@ struct StationArtworkView: View {
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ))
-            if let image {
-                image
+            if let displayedImage {
+                displayedImage
                     .resizable()
                     .scaledToFill()
                     .frame(width: size, height: size)
@@ -28,5 +37,11 @@ struct StationArtworkView: View {
         }
         .frame(width: size, height: size)
         .accessibilityLabel("电台封面")
+        .task(id: imageURL) {
+            loadedImage = nil
+            guard let imageURL,
+                  let data = await StationIconCache.shared.data(for: imageURL) else { return }
+            loadedImage = NSImage(data: data)
+        }
     }
 }

@@ -5,6 +5,8 @@ import Combine
 final class RadioPlayerViewModel: ObservableObject {
     @Published private(set) var currentStation: Station?
     @Published private(set) var isPlaying = false
+    @Published private(set) var isConnecting = false
+    @Published private(set) var playbackError: String?
     @Published private(set) var nowPlayingTitle: String?
     @Published var volume = 1.0 {
         didSet {
@@ -20,6 +22,7 @@ final class RadioPlayerViewModel: ObservableObject {
     private let icyMetadataReader = ICYMetadataReader()
     private var metadataOutput: AVPlayerItemMetadataOutput?
     private var metadataDelegate: RadioStreamMetadataDelegate?
+    private var playerItemStatusObservation: NSKeyValueObservation?
     private var playbackGeneration = UUID()
     private var playerTimeControlObservation: NSKeyValueObservation?
     private var activeHistorySessionID: UUID?
@@ -30,8 +33,15 @@ final class RadioPlayerViewModel: ObservableObject {
 
     var isMuted: Bool { volume == 0 }
 
-    init(api: RadioBrowserAPI, playbackStore: PlaybackStateStore = PlaybackStateStore()) {
+    var playbackStatus: RadioPlaybackStatus {
+        if playbackError != nil { return .failed }
+        if isConnecting { return .connecting }
+        return isPlaying ? .live : .paused
+    }
+
+    init(api: RadioBrowserAPI, playbackStore: PlaybackStateStore? = nil) {
         self.api = api
+        let playbackStore = playbackStore ?? PlaybackStateStore()
         self.playbackStore = playbackStore
         do {
             historyStore = try PlaybackHistoryStore()
@@ -58,14 +68,24 @@ final class RadioPlayerViewModel: ObservableObject {
     }
 
     func play(_ station: Station) {
-        guard let streamURL = station.streamURL else { return }
         finishActiveHistorySession()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        playerItemStatusObservation = nil
+        icyMetadataReader.stop()
         currentStation = station
         playbackStore.saveCurrentStation(station)
         isPlaying = false
+        isConnecting = false
+        playbackError = nil
         nowPlayingTitle = nil
         playbackGeneration = UUID()
         let generation = playbackGeneration
+        guard let streamURL = station.streamURL else {
+            playbackError = "这个电台没有可用的播放地址。"
+            return
+        }
+        isConnecting = true
         icyMetadataReader.start(url: streamURL, stationUUID: station.stationuuid) { [weak self] title in
             guard let self, self.playbackGeneration == generation else { return }
             self.receiveMetadata(title, source: "ICY")
@@ -74,6 +94,20 @@ final class RadioPlayerViewModel: ObservableObject {
         metadataDelegate = nil
 
         let item = AVPlayerItem(url: streamURL)
+        playerItemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] observedItem, _ in
+            let status = observedItem.status
+            let error = observedItem.error
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.player.currentItem === observedItem,
+                      self.playbackGeneration == generation else { return }
+                if status == .failed {
+                    self.isConnecting = false
+                    self.isPlaying = false
+                    self.playbackError = error?.localizedDescription ?? "无法连接到这个电台。"
+                }
+            }
+        }
         let output = AVPlayerItemMetadataOutput(identifiers: nil)
         let delegate = RadioStreamMetadataDelegate { [weak self] title in
             Task { @MainActor [weak self] in
@@ -94,9 +128,14 @@ final class RadioPlayerViewModel: ObservableObject {
 
     func togglePlayback() {
         guard let currentStation else { return }
+        if playbackError != nil {
+            play(currentStation)
+            return
+        }
         if isPlaying {
             player.pause()
             isPlaying = false
+            isConnecting = false
             icyMetadataReader.stop()
         } else if player.currentItem == nil {
             play(currentStation)
@@ -119,12 +158,20 @@ final class RadioPlayerViewModel: ObservableObject {
     private func handlePlayerTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
         switch status {
         case .playing:
+            isConnecting = false
+            playbackError = nil
             isPlaying = true
             beginOrResumeHistorySession()
-        case .paused, .waitingToPlayAtSpecifiedRate:
+        case .waitingToPlayAtSpecifiedRate:
+            isConnecting = true
+            isPlaying = false
+            checkpointAndPauseHistoryTiming()
+        case .paused:
+            isConnecting = false
             isPlaying = false
             checkpointAndPauseHistoryTiming()
         @unknown default:
+            isConnecting = false
             isPlaying = false
             checkpointAndPauseHistoryTiming()
         }

@@ -12,14 +12,14 @@
 业务组件
 ├── 电台信息、搜索框、分类切换、电台行、设置项
 界面组合
-├── 主播放器、电台列表、迷你播放器、菜单栏面板、设置
+├── 主播放器、电台列表、菜单栏面板、设置
 ```
 
 ## 2. 统一设计语言
 
 - **颜色：**优先使用 macOS 语义色，随系统外观变化；主操作使用统一强调色，直播/失败使用各自状态色。首版没有应用内主题切换。
 - **文字：**使用系统字体，统一标题、电台名称、辅助信息、状态与控件标签的层级。
-- **布局：**统一间距、控件高度、圆角、分隔线和窗口内边距；播放器、列表、迷你窗口共享同一套电台封面和按钮样式。
+- **布局：**统一间距、控件高度、圆角、分隔线和窗口内边距；播放器、列表共享同一套电台封面和按钮样式。
 - **图标：**使用 SF Symbols；图标按钮必须有辅助说明，不只靠图形表达功能。
 - **交互：**组件统一定义普通、悬停、按下、键盘焦点、禁用和加载状态；动效克制，尊重系统减少动态效果设置。
 - **平台控件：**音量滑块、设置开关、菜单优先采用 macOS 原生控件，保持系统行为和可访问性。
@@ -40,17 +40,16 @@
 | `SettingRow` | 展示设置名称、说明和原生开关/选择控件 | 标题、说明、控件、当前值、禁用状态 |
 | `EmptyStateView` | 展示空收藏、无搜索结果等反馈 | 标题、说明、可选操作（如重试/清除搜索） |
 
-所有业务组件通过属性接收状态、通过回调发出操作；播放逻辑、收藏存储和窗口导航不写入纯展示组件。主播放器、迷你播放器与菜单栏复用同一组播放/收藏/音量控件，允许使用不同尺寸和布局。
+所有业务组件通过属性接收状态、通过回调发出操作；播放逻辑、收藏存储和窗口导航不写入纯展示组件。主播放器与菜单栏复用同一组播放/收藏/音量控件，允许使用不同尺寸和布局。
 
 ## 4. 界面组合
 
 | 界面 | 主要组件组合 |
 |---|---|
-| 主播放器 | `StationArtworkView` + `StationMetadataView` + `PlaybackStatusView` + `PlayPauseButton` + `FavoriteButton` + `VolumeControl` + 列表/迷你模式入口 |
+| 主播放器 | `StationArtworkView` + `StationMetadataView` + `PlaybackStatusView` + `PlayPauseButton` + `FavoriteButton` + `VolumeControl` + 电台列表入口 |
 | 电台列表 | `StationSearchField` + `StationCategoryPicker` + 筛选入口 + `StationRowView` + `EmptyStateView` |
-| 迷你播放器 | 紧凑 `StationArtworkView` + `StationMetadataView` + `PlaybackStatusView` + `PlayPauseButton`；悬停后显示 `FavoriteButton`、`VolumeControl` 和展开/列表入口 |
-| 菜单栏面板 | 紧凑 `StationMetadataView` + `PlaybackStatusView` + `PlayPauseButton` + `VolumeControl` + `FavoriteButton` + 导航菜单 |
-| 设置 | 分组容器 + `SettingRow`；首版不包含外观选择 |
+| 菜单栏面板 | 紧凑 `StationMetadataView` + `PlaybackStatusView` + `PlayPauseButton` + `VolumeControl` + `FavoriteButton` + 设置入口 |
+| 设置 | 通用分组 + `SettingRow`；外观跟随 macOS |
 
 ## 5. 组件验收规则
 

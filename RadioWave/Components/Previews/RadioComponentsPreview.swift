@@ -36,16 +36,6 @@ struct RadioComponentsGallery: View {
                         )
                     }
                     VStack(alignment: .leading, spacing: 24) {
-                        section("迷你播放器") {
-                            MiniPlayerBar(
-                                station: station,
-                                isPlaying: isPlaying,
-                                isFavorite: isFavorite,
-                                volume: $volume,
-                                onPlayPause: { isPlaying.toggle() },
-                                onFavorite: { isFavorite.toggle() }
-                            )
-                        }
                         section("菜单栏面板") {
                             MenuBarPlayerCard(station: station, isPlaying: isPlaying, isFavorite: isFavorite, volume: $volume,
                                               onPlayPause: { isPlaying.toggle() },

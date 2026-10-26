@@ -6,7 +6,11 @@ struct PlaybackStatusView: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Circle().fill(status.color).frame(width: 6, height: 6)
+            if status == .connecting {
+                ProgressView().controlSize(.mini).tint(status.color)
+            } else {
+                Circle().fill(status.color).frame(width: 6, height: 6)
+            }
             if !compact {
                 Text(status.title)
                     .font(.system(size: 11, weight: .medium))

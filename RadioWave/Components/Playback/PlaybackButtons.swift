@@ -24,24 +24,31 @@ struct RadioIconButton: View {
 
 struct PlayPauseButton: View {
     var isPlaying: Bool
+    var isConnecting = false
     var isEnabled = true
     var size: CGFloat = 64
     var action: () -> Void = {}
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                .font(.system(size: size * 0.30, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: size, height: size)
-                .background(Color.primary.opacity(0.92), in: Circle())
-                .contentShape(Circle())
+            Group {
+                if isConnecting {
+                    ProgressView().tint(.white).controlSize(.small)
+                } else {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: size * 0.30, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: size, height: size)
+            .background(Color.primary.opacity(0.92), in: Circle())
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
-        .help(isPlaying ? "暂停" : "播放")
-        .accessibilityLabel(isPlaying ? "暂停播放" : "开始播放")
+        .help(isConnecting ? "正在连接" : (isPlaying ? "暂停" : "播放"))
+        .accessibilityLabel(isConnecting ? "正在连接电台" : (isPlaying ? "暂停播放" : "开始播放"))
     }
 }
 

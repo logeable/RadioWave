@@ -1,23 +1,48 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var library = RadioLibraryViewModel()
-    @StateObject private var player = RadioPlayerViewModel()
-    @State private var showingFavorites = false
+    @ObservedObject var library: RadioLibraryViewModel
+    @ObservedObject var player: RadioPlayerViewModel
+    @ObservedObject var navigation: RadioNavigationModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            StationBrowserView(library: library, player: player, showingFavorites: $showingFavorites)
-            RadioPlayerBar(player: player, library: library)
+        Group {
+            if navigation.showingStations {
+                RadioStationBrowserScreen(
+                    library: library,
+                    player: player,
+                    onBack: { navigation.showingStations = false },
+                    onSelectStation: { navigation.showingStations = false }
+                )
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else {
+                RadioPlayerScreen(
+                    player: player,
+                    library: library,
+                    onShowStations: { navigation.showingStations = true }
+                )
+                .transition(.move(edge: .leading).combined(with: .opacity))
+            }
         }
-        .background(RadioPalette.canvas)
-        .frame(minWidth: 760, minHeight: 560)
+        .animation(.easeInOut(duration: 0.22), value: navigation.showingStations)
+        .frame(minWidth: 420, minHeight: 560)
         .onAppear {
             RadioWaveLog.info("Application window opened", category: "Application")
+            applyLaunchBehaviorIfNeeded()
+        }
+        .focusable()
+        .onKeyPress(.space) {
+            guard player.currentStation != nil else { return .ignored }
+            player.togglePlayback()
+            return .handled
         }
     }
-}
 
-#Preview {
-    ContentView()
+    private func applyLaunchBehaviorIfNeeded() {
+        guard !navigation.didApplyLaunchBehavior else { return }
+        navigation.didApplyLaunchBehavior = true
+        guard UserDefaults.standard.bool(forKey: "RadioWave.autoplayOnLaunch"),
+              player.currentStation != nil else { return }
+        player.togglePlayback()
+    }
 }

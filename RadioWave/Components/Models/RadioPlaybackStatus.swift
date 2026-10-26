@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum RadioPlaybackStatus {
+enum RadioPlaybackStatus: Equatable {
     case connecting
     case live
     case paused
