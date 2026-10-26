@@ -12,6 +12,9 @@ struct ContentView: View {
         }
         .background(RadioPalette.canvas)
         .frame(minWidth: 760, minHeight: 560)
+        .onAppear {
+            RadioWaveLog.info("Application window opened", category: "Application")
+        }
     }
 }
 

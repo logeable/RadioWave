@@ -1,11 +1,9 @@
 import Foundation
-import OSLog
 
 /// Reads the first ICY metadata packet from a stream. The connection is short-lived
 /// so metadata can be refreshed without downloading a second copy of the audio.
 @MainActor
 final class ICYMetadataReader {
-    private let logger = Logger(subsystem: "com.logeable.RadioWave", category: "PlaybackMetadata")
     private var pollingTask: Task<Void, Never>?
     private var activeRequest: ICYMetadataRequest?
     private var generation = UUID()
@@ -58,7 +56,6 @@ final class ICYMetadataReader {
 }
 
 private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
-    private let logger = Logger(subsystem: "com.logeable.RadioWave", category: "PlaybackMetadata")
     private let stationUUID: String
     private let onCompletion: (String?) -> Void
     private var session: URLSession?
@@ -96,7 +93,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let httpResponse = response as? HTTPURLResponse else {
-            logger.warning("ICY response was not HTTP for station \(self.stationUUID, privacy: .public)")
+            RadioWaveLog.warning("ICY response was not HTTP for station \(stationUUID)", category: "PlaybackMetadata")
             completionHandler(.cancel)
             finish(with: nil)
             return
@@ -105,7 +102,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
         guard (200..<300).contains(httpResponse.statusCode),
               let interval = httpResponse.value(forHTTPHeaderField: "icy-metaint").flatMap(Int.init),
               interval > 0 else {
-            logger.info("ICY metadata unavailable for station \(self.stationUUID, privacy: .public), status=\(httpResponse.statusCode), contentType=\(httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown", privacy: .public)")
+            RadioWaveLog.info("ICY metadata unavailable for station \(stationUUID), status=\(httpResponse.statusCode), contentType=\(httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown")", category: "PlaybackMetadata")
             completionHandler(.cancel)
             finish(with: nil)
             return
@@ -113,7 +110,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
 
         metadataInterval = interval
         audioBytesRemaining = interval
-        logger.info("ICY metadata available for station \(self.stationUUID, privacy: .public), interval=\(interval) bytes")
+        RadioWaveLog.info("ICY metadata available for station \(stationUUID), interval=\(interval) bytes", category: "PlaybackMetadata")
         completionHandler(.allow)
     }
 
@@ -139,7 +136,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
 
                     emptyPacketCount += 1
                     guard emptyPacketCount < 4 else {
-                        logger.debug("No ICY title found in initial packets for station \(self.stationUUID, privacy: .public)")
+                        RadioWaveLog.debug("No ICY title found in initial packets for station \(stationUUID)", category: "PlaybackMetadata")
                         finish(with: nil)
                         return
                     }
@@ -173,7 +170,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
                     didCompleteWithError error: Error?) {
         guard !isCompleted else { return }
         if let error {
-            logger.error("ICY request failed for station \(self.stationUUID, privacy: .public): \(error.localizedDescription, privacy: .private)")
+            RadioWaveLog.error("ICY request failed for station \(stationUUID): \(RadioWaveLog.errorSummary(error))", category: "PlaybackMetadata")
         }
         finish(with: nil)
     }
@@ -191,9 +188,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
     private static func streamTitle(in packet: String) -> String? {
         guard let marker = packet.range(of: "StreamTitle='", options: .caseInsensitive) else { return nil }
         let value = packet[marker.upperBound...]
-        let title = String(value.prefix { $0 != "'" })
-            .replacingOccurrences(of: "\\'", with: "'")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.isEmpty ? nil : title
+        let rawTitle = String(value.prefix { $0 != "'" })
+        return rawTitle.isEmpty ? nil : rawTitle
     }
 }

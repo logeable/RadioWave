@@ -1,6 +1,5 @@
 import AVFoundation
 import Combine
-import OSLog
 
 @MainActor
 final class RadioPlayerViewModel: ObservableObject {
@@ -19,7 +18,6 @@ final class RadioPlayerViewModel: ObservableObject {
     private let playbackStore: PlaybackStateStore
     private let historyStore: PlaybackHistoryStore?
     private let icyMetadataReader = ICYMetadataReader()
-    private let metadataLogger = Logger(subsystem: "com.logeable.RadioWave", category: "PlaybackMetadata")
     private var metadataOutput: AVPlayerItemMetadataOutput?
     private var metadataDelegate: RadioStreamMetadataDelegate?
     private var playbackGeneration = UUID()
@@ -39,7 +37,7 @@ final class RadioPlayerViewModel: ObservableObject {
             historyStore = try PlaybackHistoryStore()
         } catch {
             historyStore = nil
-            NSLog("Unable to open playback history: %@", String(describing: error))
+            RadioWaveLog.error("Unable to open playback history: \(RadioWaveLog.errorSummary(error))", category: "PlaybackHistory")
         }
         currentStation = playbackStore.loadCurrentStation()
         player.volume = Float(volume)
@@ -87,7 +85,7 @@ final class RadioPlayerViewModel: ObservableObject {
         item.add(output)
         metadataOutput = output
         metadataDelegate = delegate
-        metadataLogger.info("Attached AVPlayer metadata output for station \(station.stationuuid, privacy: .public)")
+        RadioWaveLog.info("Attached AVPlayer metadata output for station \(station.stationuuid)", category: "PlaybackMetadata")
 
         player.replaceCurrentItem(with: item)
         player.play()
@@ -137,7 +135,7 @@ final class RadioPlayerViewModel: ObservableObject {
             do {
                 activeHistorySessionID = try historyStore?.beginSession(for: currentStation)
             } catch {
-                NSLog("Unable to start playback history session: %@", String(describing: error))
+                RadioWaveLog.error("Unable to start playback history session: \(RadioWaveLog.errorSummary(error))", category: "PlaybackHistory")
             }
             accumulatedListeningSeconds = 0
         }
@@ -166,7 +164,7 @@ final class RadioPlayerViewModel: ObservableObject {
                 listenedDurationSeconds: Int64(accumulatedListeningSeconds.rounded(.down))
             )
         } catch {
-            NSLog("Unable to finish playback history session: %@", String(describing: error))
+            RadioWaveLog.error("Unable to finish playback history session: \(RadioWaveLog.errorSummary(error))", category: "PlaybackHistory")
         }
         activeHistorySessionID = nil
         accumulatedListeningSeconds = 0
@@ -184,7 +182,7 @@ final class RadioPlayerViewModel: ObservableObject {
                 listenedDurationSeconds: Int64((accumulatedListeningSeconds + currentSegmentDuration).rounded(.down))
             )
         } catch {
-            NSLog("Unable to save playback history checkpoint: %@", String(describing: error))
+            RadioWaveLog.error("Unable to save playback history checkpoint: \(RadioWaveLog.errorSummary(error))", category: "PlaybackHistory")
         }
     }
 
@@ -204,13 +202,26 @@ final class RadioPlayerViewModel: ObservableObject {
     }
 
     private func receiveMetadata(_ title: String?, source: String) {
-        guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
-            metadataLogger.debug("Metadata event from \(source, privacy: .public) did not contain a title")
+        guard let rawTitle = title else {
+            RadioWaveLog.debug("Metadata event from \(source) did not contain a title", category: "PlaybackMetadata")
+            return
+        }
+
+        let stationUUID = currentStation?.stationuuid ?? "unknown"
+        RadioWaveLog.info(
+            "Raw track metadata from \(source), station=\(stationUUID), value=\(rawTitle.debugDescription)",
+            category: "PlaybackMetadata"
+        )
+        let title = rawTitle
+            .replacingOccurrences(of: "\\'", with: "'")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            RadioWaveLog.debug("Metadata event from \(source) contained an empty title", category: "PlaybackMetadata")
             return
         }
 
         let changed = nowPlayingTitle != title
-        metadataLogger.info("Metadata received from \(source, privacy: .public), station=\(self.currentStation?.stationuuid ?? "unknown", privacy: .public), titlePresent=true, changed=\(changed)")
+        RadioWaveLog.info("Metadata received from \(source), station=\(stationUUID), changed=\(changed)", category: "PlaybackMetadata")
         nowPlayingTitle = title
     }
 }
@@ -228,9 +239,8 @@ private final class RadioStreamMetadataDelegate: NSObject, AVPlayerItemMetadataO
         let title = groups
             .flatMap(\.items)
             .first(where: { $0.identifier == .icyMetadataStreamTitle || $0.commonKey == .commonKeyTitle })?
-            .stringValue?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .stringValue
 
-        onTitle(title?.isEmpty == false ? title : nil)
+        onTitle(title)
     }
 }
