@@ -22,7 +22,7 @@ struct RadioPlayerBar: View {
                         } label: {
                             Image(systemName: library.isFavorite(station) ? "heart.fill" : "heart")
                                 .font(.system(size: 12))
-                                .foregroundStyle(library.isFavorite(station) ? RadioPalette.accent : RadioPalette.muted)
+                                .foregroundStyle(library.isFavorite(station) ? .red : RadioPalette.muted)
                                 .frame(width: 24, height: 22)
                         }
                         .buttonStyle(.plain)

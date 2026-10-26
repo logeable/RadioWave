@@ -28,7 +28,7 @@ struct StationRow: View {
             Button(action: onFavorite) {
                 Image(systemName: isFavorite ? "heart.fill" : "heart")
                     .font(.system(size: 12))
-                    .foregroundStyle(isFavorite ? RadioPalette.accent : RadioPalette.muted)
+                    .foregroundStyle(isFavorite ? .red : RadioPalette.muted)
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)

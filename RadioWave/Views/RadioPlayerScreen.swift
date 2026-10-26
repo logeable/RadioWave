@@ -48,8 +48,6 @@ struct RadioPlayerScreen: View {
 
             StationMetadataView(station: info, alignment: .center)
 
-            PlaybackStatusView(status: player.playbackStatus)
-
             if let title = player.nowPlayingTitle, !title.isEmpty {
                 Label(title, systemImage: "music.note")
                     .font(.system(size: 12))

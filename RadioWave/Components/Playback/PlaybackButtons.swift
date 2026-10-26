@@ -4,6 +4,7 @@ struct RadioIconButton: View {
     let systemName: String
     let label: String
     var isSelected = false
+    var selectedColor: Color = RadioUIStyle.accent
     var size: CGFloat = 34
     var action: () -> Void = {}
 
@@ -11,7 +12,7 @@ struct RadioIconButton: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: size * 0.38, weight: .medium))
-                .foregroundStyle(isSelected ? RadioUIStyle.accent : Color.primary)
+                .foregroundStyle(isSelected ? selectedColor : Color.primary)
                 .frame(width: size, height: size)
                 .contentShape(Rectangle())
         }
@@ -63,6 +64,7 @@ struct FavoriteButton: View {
             systemName: isFavorite ? "heart.fill" : "heart",
             label: isFavorite ? "取消收藏" : "收藏电台",
             isSelected: isFavorite,
+            selectedColor: .red,
             size: size,
             action: action
         )
