@@ -8,6 +8,7 @@ final class RadioPlayerViewModel: ObservableObject {
     @Published private(set) var isConnecting = false
     @Published private(set) var playbackError: String?
     @Published private(set) var nowPlayingTitle: String?
+    @Published private(set) var audioLevel = 0.0
     @Published var volume = 1.0 {
         didSet {
             player.volume = Float(volume)
@@ -25,6 +26,9 @@ final class RadioPlayerViewModel: ObservableObject {
     private var playerItemStatusObservation: NSKeyValueObservation?
     private var playbackGeneration = UUID()
     private var playerTimeControlObservation: NSKeyValueObservation?
+    private var playbackPreparationTask: Task<Void, Never>?
+    private var audioLevelPollingTask: Task<Void, Never>?
+    private let audioLevelMeter = AudioLevelMeter()
     private var activeHistorySessionID: UUID?
     private var accumulatedListeningSeconds: TimeInterval = 0
     private var listeningSegmentStartedAt: TimeInterval?
@@ -68,6 +72,9 @@ final class RadioPlayerViewModel: ObservableObject {
     }
 
     func play(_ station: Station) {
+        playbackPreparationTask?.cancel()
+        stopAudioLevelPolling()
+        audioLevelMeter.reset()
         finishActiveHistorySession()
         player.pause()
         player.replaceCurrentItem(with: nil)
@@ -93,7 +100,8 @@ final class RadioPlayerViewModel: ObservableObject {
         metadataOutput = nil
         metadataDelegate = nil
 
-        let item = AVPlayerItem(url: streamURL)
+        let asset = AVURLAsset(url: streamURL)
+        let item = AVPlayerItem(asset: asset)
         playerItemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] observedItem, _ in
             let status = observedItem.status
             let error = observedItem.error
@@ -121,9 +129,31 @@ final class RadioPlayerViewModel: ObservableObject {
         metadataDelegate = delegate
         RadioWaveLog.debug("Attached AVPlayer metadata output for station \(station.stationuuid)", category: "PlaybackMetadata")
 
-        player.replaceCurrentItem(with: item)
-        player.play()
-        api.recordClick(for: station)
+        playbackPreparationTask = Task { @MainActor [weak self] in
+            var audioTracks: [AVAssetTrack] = []
+            do {
+                audioTracks = try await asset.loadTracks(withMediaType: .audio)
+            } catch {
+                RadioWaveLog.debug("Unable to inspect audio track for visualization: \(RadioWaveLog.errorSummary(error))", category: "Playback")
+            }
+
+            guard let self,
+                  !Task.isCancelled,
+                  self.playbackGeneration == generation else { return }
+
+            if let audioTrack = audioTracks.first {
+                do {
+                    item.audioMix = try AudioLevelTap.makeMix(for: audioTrack, meter: self.audioLevelMeter)
+                } catch {
+                    RadioWaveLog.debug("Audio visualization tap unavailable: \(RadioWaveLog.errorSummary(error))", category: "Playback")
+                }
+            }
+
+            self.player.replaceCurrentItem(with: item)
+            self.player.play()
+            self.api.recordClick(for: station)
+            self.playbackPreparationTask = nil
+        }
     }
 
     func togglePlayback() {
@@ -162,19 +192,50 @@ final class RadioPlayerViewModel: ObservableObject {
             playbackError = nil
             isPlaying = true
             beginOrResumeHistorySession()
+            startAudioLevelPolling()
         case .waitingToPlayAtSpecifiedRate:
             isConnecting = true
             isPlaying = false
             checkpointAndPauseHistoryTiming()
+            stopAudioLevelPolling()
         case .paused:
             isConnecting = false
             isPlaying = false
             checkpointAndPauseHistoryTiming()
+            stopAudioLevelPolling()
         @unknown default:
             isConnecting = false
             isPlaying = false
             checkpointAndPauseHistoryTiming()
+            stopAudioLevelPolling()
         }
+    }
+
+    private func startAudioLevelPolling() {
+        guard audioLevelPollingTask == nil else { return }
+        audioLevelPollingTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let outputLevel = Double(self.audioLevelMeter.currentLevel) * self.volume
+                let decibels = 20 * log10(max(outputLevel, 0.00001))
+                let measuredLevel = min(max((decibels + 54) / 48, 0), 1)
+                let nextLevel = max(measuredLevel, self.audioLevel * 0.88)
+                if abs(self.audioLevel - nextLevel) > 0.006 {
+                    self.audioLevel = nextLevel
+                }
+                do {
+                    try await Task.sleep(for: .milliseconds(40))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopAudioLevelPolling() {
+        audioLevelPollingTask?.cancel()
+        audioLevelPollingTask = nil
+        audioLevel = 0
     }
 
     private func beginOrResumeHistorySession() {

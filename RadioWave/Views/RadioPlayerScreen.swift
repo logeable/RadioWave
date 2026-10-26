@@ -43,8 +43,13 @@ struct RadioPlayerScreen: View {
 
     private func playerContent(station: Station, info: RadioStationInfo) -> some View {
         VStack(spacing: 13) {
-            StationArtworkView(imageURL: info.artworkURL, size: 188)
-                .shadow(color: .black.opacity(0.13), radius: 20, y: 9)
+            HStack(spacing: 14) {
+                MusicRhythmVisualizer(audioLevel: player.audioLevel, isActive: player.isPlaying)
+                StationArtworkView(imageURL: info.artworkURL, size: 188)
+                    .shadow(color: .black.opacity(0.13), radius: 20, y: 9)
+                MusicRhythmVisualizer(audioLevel: player.audioLevel, isActive: player.isPlaying)
+                    .scaleEffect(x: -1, y: 1)
+            }
 
             StationMetadataView(station: info, alignment: .center)
 
