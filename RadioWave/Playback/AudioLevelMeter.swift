@@ -2,72 +2,105 @@ import AVFoundation
 import MediaToolbox
 import os
 
+struct AudioBandLevels: Equatable {
+    var bass = 0.0
+    var mid = 0.0
+    var treble = 0.0
+
+    static let zero = AudioBandLevels()
+}
+
 final class AudioLevelMeter: @unchecked Sendable {
-    private let level = OSAllocatedUnfairLock(initialState: Float.zero)
+    private let levels = OSAllocatedUnfairLock(initialState: AudioBandLevels.zero)
     private var isFloat = true
     private var bitsPerChannel: UInt32 = 32
+    private var isNonInterleaved = false
+    private var sampleRate = 44_100.0
+    private var bassFilterStates: [Double] = []
+    private var midFilterStates: [Double] = []
 
-    var currentLevel: Float {
-        level.withLock { $0 }
+    var currentBands: AudioBandLevels {
+        levels.withLock { $0 }
     }
 
     func reset() {
-        level.withLock { $0 = 0 }
+        levels.withLock { $0 = .zero }
     }
 
     func prepare(format: AudioStreamBasicDescription) {
         isFloat = format.mFormatFlags & kAudioFormatFlagIsFloat != 0
         bitsPerChannel = format.mBitsPerChannel
+        isNonInterleaved = format.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
+        sampleRate = max(format.mSampleRate, 1)
+        let channelCount = max(Int(format.mChannelsPerFrame), 1)
+        bassFilterStates = Array(repeating: 0, count: channelCount)
+        midFilterStates = Array(repeating: 0, count: channelCount)
     }
 
     func update(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
         guard frameCount > 0 else { return }
 
-        var sumOfSquares = 0.0
+        let bassAlpha = 1 - exp(-2 * Double.pi * 180 / sampleRate)
+        let midAlpha = 1 - exp(-2 * Double.pi * 2_200 / sampleRate)
+        var bassEnergy = 0.0
+        var midEnergy = 0.0
+        var trebleEnergy = 0.0
         var sampleCount = 0
 
-        for buffer in UnsafeMutableAudioBufferListPointer(bufferList) {
+        for (bufferIndex, buffer) in UnsafeMutableAudioBufferListPointer(bufferList).enumerated() {
             guard let data = buffer.mData else { continue }
-            switch (isFloat, bitsPerChannel) {
-            case (true, 32):
-                let samples = data.assumingMemoryBound(to: Float.self)
-                let count = min(Int(buffer.mDataByteSize) / MemoryLayout<Float>.size, frameCount * Int(buffer.mNumberChannels))
-                for index in 0..<count {
-                    let sample = Double(samples[index])
-                    sumOfSquares += sample * sample
+            let channelCount = max(Int(buffer.mNumberChannels), 1)
+            let bytesPerSample = Int(bitsPerChannel / 8)
+            guard bytesPerSample > 0 else { continue }
+            let samplesInBuffer = Int(buffer.mDataByteSize) / bytesPerSample
+            let availableFrames = isNonInterleaved ? samplesInBuffer : samplesInBuffer / channelCount
+            let framesToProcess = min(frameCount, availableFrames)
+
+            for frame in 0..<framesToProcess {
+                for channel in 0..<channelCount {
+                    let stateIndex = isNonInterleaved ? bufferIndex + channel : channel
+                    guard stateIndex < bassFilterStates.count,
+                          stateIndex < midFilterStates.count else { continue }
+                    let sampleIndex = isNonInterleaved ? frame : frame * channelCount + channel
+                    let sample = sampleValue(in: data, at: sampleIndex)
+
+                    bassFilterStates[stateIndex] += bassAlpha * (sample - bassFilterStates[stateIndex])
+                    midFilterStates[stateIndex] += midAlpha * (sample - midFilterStates[stateIndex])
+                    let bass = bassFilterStates[stateIndex]
+                    let mid = midFilterStates[stateIndex] - bass
+                    let treble = sample - midFilterStates[stateIndex]
+
+                    bassEnergy += bass * bass
+                    midEnergy += mid * mid
+                    trebleEnergy += treble * treble
+                    sampleCount += 1
                 }
-                sampleCount += count
-            case (true, 64):
-                let samples = data.assumingMemoryBound(to: Double.self)
-                let count = min(Int(buffer.mDataByteSize) / MemoryLayout<Double>.size, frameCount * Int(buffer.mNumberChannels))
-                for index in 0..<count {
-                    let sample = samples[index]
-                    sumOfSquares += sample * sample
-                }
-                sampleCount += count
-            case (false, 16):
-                let samples = data.assumingMemoryBound(to: Int16.self)
-                let count = min(Int(buffer.mDataByteSize) / MemoryLayout<Int16>.size, frameCount * Int(buffer.mNumberChannels))
-                for index in 0..<count {
-                    let sample = Double(samples[index]) / Double(Int16.max)
-                    sumOfSquares += sample * sample
-                }
-                sampleCount += count
-            case (false, 32):
-                let samples = data.assumingMemoryBound(to: Int32.self)
-                let count = min(Int(buffer.mDataByteSize) / MemoryLayout<Int32>.size, frameCount * Int(buffer.mNumberChannels))
-                for index in 0..<count {
-                    let sample = Double(samples[index]) / Double(Int32.max)
-                    sumOfSquares += sample * sample
-                }
-                sampleCount += count
-            default:
-                continue
             }
         }
 
-        let rms = sampleCount > 0 ? Float((sumOfSquares / Double(sampleCount)).squareRoot()) : 0
-        level.withLock { $0 = min(max(rms, 0), 1) }
+        guard sampleCount > 0 else { return }
+        let count = Double(sampleCount)
+        let nextLevels = AudioBandLevels(
+            bass: sqrt(bassEnergy / count),
+            mid: sqrt(midEnergy / count),
+            treble: sqrt(trebleEnergy / count)
+        )
+        levels.withLock { $0 = nextLevels }
+    }
+
+    private func sampleValue(in data: UnsafeMutableRawPointer, at index: Int) -> Double {
+        switch (isFloat, bitsPerChannel) {
+        case (true, 32):
+            return Double(data.assumingMemoryBound(to: Float.self)[index])
+        case (true, 64):
+            return data.assumingMemoryBound(to: Double.self)[index]
+        case (false, 16):
+            return Double(data.assumingMemoryBound(to: Int16.self)[index]) / Double(Int16.max)
+        case (false, 32):
+            return Double(data.assumingMemoryBound(to: Int32.self)[index]) / Double(Int32.max)
+        default:
+            return 0
+        }
     }
 }
 

@@ -8,7 +8,7 @@ final class RadioPlayerViewModel: ObservableObject {
     @Published private(set) var isConnecting = false
     @Published private(set) var playbackError: String?
     @Published private(set) var nowPlayingTitle: String?
-    @Published private(set) var audioLevel = 0.0
+    @Published private(set) var audioBands = AudioBandLevels.zero
     @Published var volume = 1.0 {
         didSet {
             player.volume = Float(volume)
@@ -216,12 +216,16 @@ final class RadioPlayerViewModel: ObservableObject {
         audioLevelPollingTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let outputLevel = Double(self.audioLevelMeter.currentLevel) * self.volume
-                let decibels = 20 * log10(max(outputLevel, 0.00001))
-                let measuredLevel = min(max((decibels + 54) / 48, 0), 1)
-                let nextLevel = max(measuredLevel, self.audioLevel * 0.88)
-                if abs(self.audioLevel - nextLevel) > 0.006 {
-                    self.audioLevel = nextLevel
+                let measuredBands = self.audioLevelMeter.currentBands
+                let nextBands = AudioBandLevels(
+                    bass: max(self.normalizedBandLevel(measuredBands.bass), self.audioBands.bass * 0.88),
+                    mid: max(self.normalizedBandLevel(measuredBands.mid), self.audioBands.mid * 0.88),
+                    treble: max(self.normalizedBandLevel(measuredBands.treble), self.audioBands.treble * 0.88)
+                )
+                if abs(self.audioBands.bass - nextBands.bass) > 0.006
+                    || abs(self.audioBands.mid - nextBands.mid) > 0.006
+                    || abs(self.audioBands.treble - nextBands.treble) > 0.006 {
+                    self.audioBands = nextBands
                 }
                 do {
                     try await Task.sleep(for: .milliseconds(40))
@@ -235,7 +239,13 @@ final class RadioPlayerViewModel: ObservableObject {
     private func stopAudioLevelPolling() {
         audioLevelPollingTask?.cancel()
         audioLevelPollingTask = nil
-        audioLevel = 0
+        audioBands = .zero
+    }
+
+    private func normalizedBandLevel(_ level: Double) -> Double {
+        let outputLevel = level * volume
+        let decibels = 20 * log10(max(outputLevel, 0.00001))
+        return min(max((decibels + 54) / 48, 0), 1)
     }
 
     private func beginOrResumeHistorySession() {
