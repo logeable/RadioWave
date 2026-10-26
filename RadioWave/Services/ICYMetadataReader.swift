@@ -110,7 +110,7 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
 
         metadataInterval = interval
         audioBytesRemaining = interval
-        RadioWaveLog.info("ICY metadata available for station \(stationUUID), interval=\(interval) bytes", category: "PlaybackMetadata")
+        RadioWaveLog.debug("ICY metadata available for station \(stationUUID), interval=\(interval) bytes", category: "PlaybackMetadata")
         completionHandler(.allow)
     }
 

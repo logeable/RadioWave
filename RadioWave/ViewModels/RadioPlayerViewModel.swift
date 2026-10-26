@@ -119,7 +119,7 @@ final class RadioPlayerViewModel: ObservableObject {
         item.add(output)
         metadataOutput = output
         metadataDelegate = delegate
-        RadioWaveLog.info("Attached AVPlayer metadata output for station \(station.stationuuid)", category: "PlaybackMetadata")
+        RadioWaveLog.debug("Attached AVPlayer metadata output for station \(station.stationuuid)", category: "PlaybackMetadata")
 
         player.replaceCurrentItem(with: item)
         player.play()
@@ -255,7 +255,7 @@ final class RadioPlayerViewModel: ObservableObject {
         }
 
         let stationUUID = currentStation?.stationuuid ?? "unknown"
-        RadioWaveLog.info(
+        RadioWaveLog.debug(
             "Raw track metadata from \(source), station=\(stationUUID), value=\(rawTitle.debugDescription)",
             category: "PlaybackMetadata"
         )
@@ -268,7 +268,7 @@ final class RadioPlayerViewModel: ObservableObject {
         }
 
         let changed = nowPlayingTitle != title
-        RadioWaveLog.info("Metadata received from \(source), station=\(stationUUID), changed=\(changed)", category: "PlaybackMetadata")
+        RadioWaveLog.debug("Metadata received from \(source), station=\(stationUUID), changed=\(changed)", category: "PlaybackMetadata")
         nowPlayingTitle = title
     }
 }
