@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 import Security
 
@@ -117,8 +118,26 @@ final class ImageGenerationService: ObservableObject {
         let startedAt = Date()
         let host = configuredHost
         let model = selectedModel
+        let cacheKey = title
+
+        if let cachedData = await GeneratedImageCache.shared.imageData(for: cacheKey) {
+            if let image = NSImage(data: cachedData) {
+                RadioWaveLog.info(
+                    "Track background image cache hit, model=\(model), host=\(host), bytes=\(cachedData.count)",
+                    category: "ImageGeneration"
+                )
+                return image
+            }
+
+            await GeneratedImageCache.shared.removeImage(for: cacheKey)
+            RadioWaveLog.warning(
+                "Discarded invalid cached background image, model=\(model), host=\(host)",
+                category: "ImageGeneration"
+            )
+        }
+
         RadioWaveLog.info(
-            "Starting track background generation, model=\(model), host=\(host)",
+            "Track background image cache miss; starting generation, model=\(model), host=\(host)",
             category: "ImageGeneration"
         )
 
@@ -143,21 +162,29 @@ final class ImageGenerationService: ObservableObject {
             }
 
             if let encodedImage = firstImage["b64_json"] as? String,
-               let imageData = Data(base64Encoded: encodedImage),
-               let image = NSImage(data: imageData) {
-                logGenerationSuccess(model: model, host: host, delivery: "base64", bytes: imageData.count, startedAt: startedAt)
-                return image
+               let imageData = Data(base64Encoded: encodedImage) {
+                return try await cacheAndMakeImage(
+                    imageData,
+                    cacheKey: cacheKey,
+                    model: model,
+                    host: host,
+                    delivery: "base64",
+                    startedAt: startedAt
+                )
             }
 
             if let imageURLString = firstImage["url"] as? String,
                let imageURL = URL(string: imageURLString) {
                 let (imageData, imageResponse) = try await session.data(from: imageURL)
                 try validate(imageResponse)
-                guard let image = NSImage(data: imageData) else {
-                    throw ImageGenerationError.invalidImageResponse
-                }
-                logGenerationSuccess(model: model, host: host, delivery: "url", bytes: imageData.count, startedAt: startedAt)
-                return image
+                return try await cacheAndMakeImage(
+                    imageData,
+                    cacheKey: cacheKey,
+                    model: model,
+                    host: host,
+                    delivery: "url",
+                    startedAt: startedAt
+                )
             }
 
             throw ImageGenerationError.invalidImageResponse
@@ -219,12 +246,97 @@ final class ImageGenerationService: ObservableObject {
         Int(Date().timeIntervalSince(start) * 1_000)
     }
 
+    private func cacheAndMakeImage(
+        _ data: Data,
+        cacheKey: String,
+        model: String,
+        host: String,
+        delivery: String,
+        startedAt: Date
+    ) async throws -> NSImage {
+        guard let image = NSImage(data: data) else {
+            throw ImageGenerationError.invalidImageResponse
+        }
+        await GeneratedImageCache.shared.storeImage(data, for: cacheKey)
+        logGenerationSuccess(model: model, host: host, delivery: delivery, bytes: data.count, startedAt: startedAt)
+        return image
+    }
+
     private func validate(_ response: URLResponse) throws {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ImageGenerationError.invalidResponse
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw ImageGenerationError.httpStatus(httpResponse.statusCode)
+        }
+    }
+}
+
+private actor GeneratedImageCache {
+    static let shared = GeneratedImageCache()
+
+    private let directoryURL: URL
+    private let maximumImageCount = 100
+    private let fileManager = FileManager.default
+
+    private init() {
+        let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        directoryURL = cachesDirectory
+            .appendingPathComponent("RadioWave", isDirectory: true)
+            .appendingPathComponent("GeneratedTrackBackgrounds", isDirectory: true)
+    }
+
+    func imageData(for key: String) -> Data? {
+        let url = fileURL(for: key)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        return data
+    }
+
+    func storeImage(_ data: Data, for key: String) {
+        do {
+            try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            try data.write(to: fileURL(for: key), options: .atomic)
+            try removeLeastRecentlyUsedImagesIfNeeded()
+        } catch {
+            let nsError = error as NSError
+            let errorSummary = "\(nsError.domain) (\(nsError.code))"
+            Task { @MainActor in
+                RadioWaveLog.warning(
+                    "Unable to store generated background image cache: \(errorSummary)",
+                    category: "ImageGeneration"
+                )
+            }
+        }
+    }
+
+    func removeImage(for key: String) {
+        try? fileManager.removeItem(at: fileURL(for: key))
+    }
+
+    private func fileURL(for key: String) -> URL {
+        let digest = SHA256.hash(data: Data(key.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return directoryURL.appendingPathComponent(digest).appendingPathExtension("image")
+    }
+
+    private func removeLeastRecentlyUsedImagesIfNeeded() throws {
+        let files = try fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )
+        guard files.count > maximumImageCount else { return }
+
+        let datedFiles = files.map { url in
+            let modifiedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            return (url, modifiedAt)
+        }
+        for (url, _) in datedFiles.sorted(by: { $0.1 > $1.1 }).dropFirst(maximumImageCount) {
+            try? fileManager.removeItem(at: url)
         }
     }
 }

@@ -31,11 +31,6 @@ struct RadioPlayerScreen: View {
 
     private var header: some View {
         HStack(spacing: 9) {
-            Image(systemName: "dot.radiowaves.left.and.right")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(RadioUIStyle.accent)
-            Text("Radio")
-                .font(.system(size: 15, weight: .semibold))
             Spacer()
             RadioIconButton(systemName: "list.bullet", label: "打开电台列表", action: onShowStations)
         }

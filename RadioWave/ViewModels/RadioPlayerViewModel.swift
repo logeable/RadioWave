@@ -114,7 +114,6 @@ final class RadioPlayerViewModel: ObservableObject {
     func play(_ station: Station) {
         playbackPreparationTask?.cancel()
         imageGenerationTask?.cancel()
-        generatedBackgroundImage = nil
         stopAudioLevelPolling()
         audioLevelMeter.reset()
         finishActiveHistorySession()
@@ -384,7 +383,6 @@ final class RadioPlayerViewModel: ObservableObject {
         RadioWaveLog.debug("Metadata received from \(source), station=\(stationUUID), changed=\(changed)", category: "PlaybackMetadata")
         nowPlayingTitle = title
         if changed {
-            generatedBackgroundImage = nil
             generateBackground(for: title)
         }
     }

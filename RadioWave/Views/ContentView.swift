@@ -1,10 +1,16 @@
 import SwiftUI
 
 struct ContentView: View {
+    private struct BackgroundImageLayer: Identifiable {
+        let id = UUID()
+        let image: NSImage
+    }
+
     @ObservedObject var library: RadioLibraryViewModel
     @ObservedObject var player: RadioPlayerViewModel
     @ObservedObject var navigation: RadioNavigationModel
     @ObservedObject private var imageGeneration = ImageGenerationService.shared
+    @State private var backgroundImageLayers: [BackgroundImageLayer] = []
 
     var body: some View {
         Group {
@@ -30,7 +36,15 @@ struct ContentView: View {
         .background(windowBackground)
         .onAppear {
             RadioWaveLog.info("Application window opened", category: "Application")
+            if backgroundImageLayers.isEmpty, let image = player.generatedBackgroundImage {
+                backgroundImageLayers = [BackgroundImageLayer(image: image)]
+            }
             applyLaunchBehaviorIfNeeded()
+        }
+        .onChange(of: player.generatedBackgroundImage) { _, image in
+            withAnimation(.easeInOut(duration: 1.2)) {
+                backgroundImageLayers = image.map { [BackgroundImageLayer(image: $0)] } ?? []
+            }
         }
         .focusable()
         .focusEffectDisabled()
@@ -45,8 +59,8 @@ struct ContentView: View {
         GeometryReader { geometry in
             ZStack {
                 RadioUIStyle.canvas
-                if let image = player.generatedBackgroundImage {
-                    Image(nsImage: image)
+                ForEach(backgroundImageLayers) { layer in
+                    Image(nsImage: layer.image)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .frame(width: geometry.size.width, height: geometry.size.height)
@@ -54,12 +68,12 @@ struct ContentView: View {
                         .blur(radius: imageGeneration.backgroundBlurRadius)
                         .opacity(1 - imageGeneration.backgroundTransparency)
                         .transition(.opacity)
+                        .zIndex(1)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }
-        .animation(.easeInOut(duration: 0.8), value: player.generatedBackgroundImage)
     }
 
     private func applyLaunchBehaviorIfNeeded() {
