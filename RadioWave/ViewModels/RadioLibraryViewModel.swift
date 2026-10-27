@@ -7,7 +7,9 @@ final class RadioLibraryViewModel: ObservableObject {
     @Published private(set) var favorites: [Station]
     @Published private(set) var isLoading = false
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isFiltering = false
     @Published private(set) var syncProgress = 0
+    @Published private(set) var syncProgressTotal: Int?
     @Published private(set) var errorMessage: String?
     @Published private(set) var refreshMessage: String?
     @Published private(set) var cacheUpdatedAt: Date?
@@ -17,6 +19,14 @@ final class RadioLibraryViewModel: ObservableObject {
     @Published private(set) var codecOptions: [StationFilterOption] = []
 
     var cachedStationCount: Int { allStations.count }
+    var syncProgressPercentage: Int? {
+        guard let syncProgressTotal, syncProgressTotal > 0 else { return nil }
+        return min(99, Int(Double(syncProgress) / Double(syncProgressTotal) * 100))
+    }
+    var syncProgressFraction: Double? {
+        guard let syncProgressTotal, syncProgressTotal > 0 else { return nil }
+        return min(0.99, Double(syncProgress) / Double(syncProgressTotal))
+    }
 
     private let api: RadioBrowserAPI
     private let cacheStore: StationCacheStore
@@ -25,6 +35,9 @@ final class RadioLibraryViewModel: ObservableObject {
     private var currentSearch = StationSearch(query: "")
     private var showingFavorites = false
     private var syncTask: Task<Void, Never>?
+    private var filterWorker: Task<[Station], Never>?
+    private var filterTask: Task<Void, Never>?
+    private var filterGeneration = UUID()
 
     init(api: RadioBrowserAPI,
          cacheStore: StationCacheStore,
@@ -71,11 +84,26 @@ final class RadioLibraryViewModel: ObservableObject {
         favorites.contains(where: { $0.id == station.id })
     }
 
+    func clearStationCache() {
+        guard !isLoading, !isRefreshing else { return }
+        allStations = []
+        cacheUpdatedAt = nil
+        cacheStore.clearDirectory()
+        updateFilterOptions()
+        applyCurrentFilter()
+    }
+
+    func recacheStations() {
+        guard !isLoading, !isRefreshing else { return }
+        synchronizeDirectory()
+    }
+
     private func synchronizeDirectory() {
         guard syncTask == nil else { return }
         isLoading = allStations.isEmpty
         isRefreshing = !allStations.isEmpty
         syncProgress = 0
+        syncProgressTotal = nil
         errorMessage = nil
         refreshMessage = nil
 
@@ -88,8 +116,9 @@ final class RadioLibraryViewModel: ObservableObject {
             }
 
             do {
-                let downloadedStations = try await api.fetchAllStations { [weak self] count in
+                let downloadedStations = try await api.fetchAllStations { [weak self] count, total in
                     self?.syncProgress = count
+                    self?.syncProgressTotal = total
                 }
                 guard !Task.isCancelled else { return }
                 allStations = downloadedStations
@@ -97,6 +126,8 @@ final class RadioLibraryViewModel: ObservableObject {
                 cacheStore.saveDirectory(downloadedStations)
                 cacheUpdatedAt = Date()
                 applyCurrentFilter()
+                syncProgress = downloadedStations.count
+                syncProgressTotal = downloadedStations.count
             } catch is CancellationError {
                 return
             } catch {
@@ -111,43 +142,69 @@ final class RadioLibraryViewModel: ObservableObject {
     }
 
     private func applyCurrentFilter() {
-        if showingFavorites {
-            stations = favorites
-            errorMessage = favorites.isEmpty ? "还没有收藏电台。" : nil
-            return
+        filterWorker?.cancel()
+        filterTask?.cancel()
+
+        let generation = UUID()
+        filterGeneration = generation
+        let search = currentSearch
+        let source = showingFavorites ? favorites : allStations
+        let favoritesOnly = showingFavorites
+        isFiltering = true
+
+        let worker = Task.detached(priority: .userInitiated) {
+            Self.filteredStations(source, search: search, favoritesOnly: favoritesOnly)
+        }
+        filterWorker = worker
+        filterTask = Task { @MainActor [weak self] in
+            let result = await worker.value
+            guard let self, self.filterGeneration == generation else { return }
+            self.stations = result
+            self.isFiltering = false
+            self.errorMessage = favoritesOnly
+                ? (result.isEmpty ? "还没有收藏电台。" : nil)
+                : (self.allStations.isEmpty ? nil : (result.isEmpty ? "没有找到匹配的电台，试试更短的关键词。" : nil))
+            self.filterWorker = nil
+            self.filterTask = nil
+        }
+    }
+
+    nonisolated private static func filteredStations(
+        _ source: [Station],
+        search: StationSearch,
+        favoritesOnly: Bool
+    ) -> [Station] {
+        guard !favoritesOnly else { return source }
+        var results: [Station] = []
+        results.reserveCapacity(min(source.count, 512))
+        for (index, station) in source.enumerated() {
+            if index.isMultiple(of: 256), Task.isCancelled { return [] }
+            if !search.query.isEmpty {
+                let matchesQuery = [station.name, station.tags ?? "", station.country ?? "", station.language ?? "", station.codec ?? ""]
+                    .contains { $0.localizedCaseInsensitiveContains(search.query) }
+                guard matchesQuery else { continue }
+            }
+            if let tag = search.tag, !tag.isEmpty, !containsExactValue(tag, in: station.tags) { continue }
+            if !search.country.isEmpty,
+               (station.country ?? "").localizedCaseInsensitiveCompare(search.country) != .orderedSame { continue }
+            if !search.language.isEmpty, !containsExactValue(search.language, in: station.language) { continue }
+            if !search.codec.isEmpty,
+               (station.codec ?? "").localizedCaseInsensitiveCompare(search.codec) != .orderedSame { continue }
+            if search.minimumBitrate > 0, (station.bitrate ?? 0) < search.minimumBitrate { continue }
+            results.append(station)
         }
 
-        var results = allStations
-        if !currentSearch.query.isEmpty {
-            results = results.filter { station in
-                [station.name, station.tags ?? "", station.country ?? "", station.language ?? "", station.codec ?? ""]
-                    .contains { $0.localizedCaseInsensitiveContains(currentSearch.query) }
-            }
-        }
-        if let tag = currentSearch.tag, !tag.isEmpty {
-            results = results.filter { containsExactValue(tag, in: $0.tags) }
-        }
-        if !currentSearch.country.isEmpty {
-            results = results.filter { ($0.country ?? "").localizedCaseInsensitiveCompare(currentSearch.country) == .orderedSame }
-        }
-        if !currentSearch.language.isEmpty {
-            results = results.filter { containsExactValue(currentSearch.language, in: $0.language) }
-        }
-        if !currentSearch.codec.isEmpty {
-            results = results.filter { ($0.codec ?? "").localizedCaseInsensitiveCompare(currentSearch.codec) == .orderedSame }
-        }
-        if currentSearch.minimumBitrate > 0 {
-            results = results.filter { ($0.bitrate ?? 0) >= currentSearch.minimumBitrate }
-        }
-        switch currentSearch.sort {
+        if Task.isCancelled { return [] }
+
+        switch search.sort {
         case .popular:
-            stations = results.sorted { ($0.clickcount ?? 0) > ($1.clickcount ?? 0) }
+            results.sort { ($0.clickcount ?? 0) > ($1.clickcount ?? 0) }
         case .name:
-            stations = results.sorted { $0.safeName.localizedStandardCompare($1.safeName) == .orderedAscending }
+            results.sort { $0.safeName.localizedStandardCompare($1.safeName) == .orderedAscending }
         case .bitrate:
-            stations = results.sorted { ($0.bitrate ?? 0) > ($1.bitrate ?? 0) }
+            results.sort { ($0.bitrate ?? 0) > ($1.bitrate ?? 0) }
         }
-        errorMessage = allStations.isEmpty ? nil : (stations.isEmpty ? "没有找到匹配的电台，试试更短的关键词。" : nil)
+        return results
     }
 
     private func updateFilterOptions() {
@@ -190,7 +247,7 @@ final class RadioLibraryViewModel: ObservableObject {
         }
     }
 
-    private func containsExactValue(_ soughtValue: String, in rawValues: String?) -> Bool {
+    nonisolated private static func containsExactValue(_ soughtValue: String, in rawValues: String?) -> Bool {
         rawValues?.components(separatedBy: ",").contains {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare(soughtValue) == .orderedSame
         } ?? false

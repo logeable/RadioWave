@@ -2,7 +2,7 @@ import Foundation
 
 /// A station keeps every field returned by Radio Browser. Known fields are exposed
 /// as typed accessors below; unrecognized and nested fields remain in `attributes`.
-struct Station: Codable, Identifiable {
+struct Station: Codable, Identifiable, Sendable {
     let attributes: [String: StationJSONValue]
 
     var id: String { stationuuid }
@@ -102,7 +102,7 @@ private struct DynamicCodingKey: CodingKey {
     }
 }
 
-enum StationJSONValue: Codable {
+enum StationJSONValue: Codable, Sendable {
     case string(String)
     case integer(Int)
     case number(Double)
@@ -146,7 +146,7 @@ enum StationJSONValue: Codable {
     }
 }
 
-struct StationSearch: Hashable {
+struct StationSearch: Hashable, Sendable {
     let query: String
     let tag: String?
     let country: String
@@ -180,7 +180,7 @@ struct StationFilterOption: Hashable, Identifiable {
     var title: String { value }
 }
 
-enum StationSort: String, CaseIterable, Identifiable {
+enum StationSort: String, CaseIterable, Identifiable, Sendable {
     case popular
     case name
     case bitrate

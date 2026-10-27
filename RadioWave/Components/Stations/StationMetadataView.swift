@@ -4,6 +4,7 @@ struct StationMetadataView: View {
     let station: RadioStationInfo
     var alignment: HorizontalAlignment = .leading
     var compact = false
+    var detailColor: Color = .secondary
 
     var body: some View {
         VStack(alignment: alignment, spacing: compact ? 2 : 5) {
@@ -14,7 +15,7 @@ struct StationMetadataView: View {
             Text(station.detail)
                 .font(.system(size: compact ? 10 : 12))
                 .lineLimit(1)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(detailColor)
         }
         .accessibilityElement(children: .combine)
     }

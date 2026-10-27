@@ -205,6 +205,14 @@ final class ImageGenerationService: ObservableObject {
         }
     }
 
+    func cachedBackgroundCount() async -> Int {
+        await GeneratedImageCache.shared.imageCount()
+    }
+
+    func clearBackgroundCache() async throws {
+        try await GeneratedImageCache.shared.clear()
+    }
+
     private func endpointURL(_ endpoint: String) throws -> URL {
         let address = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: address),
@@ -313,6 +321,20 @@ private actor GeneratedImageCache {
 
     func removeImage(for key: String) {
         try? fileManager.removeItem(at: fileURL(for: key))
+    }
+
+    func imageCount() -> Int {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        return urls.filter { $0.pathExtension == "image" }.count
+    }
+
+    func clear() throws {
+        guard fileManager.fileExists(atPath: directoryURL.path) else { return }
+        try fileManager.removeItem(at: directoryURL)
     }
 
     private func fileURL(for key: String) -> URL {

@@ -39,6 +39,20 @@ actor StationIconCache {
         }
     }
 
+    func cachedImageCount() -> Int {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        return urls.filter { $0.pathExtension == "image" }.count
+    }
+
+    func clear() throws {
+        guard fileManager.fileExists(atPath: directory.path) else { return }
+        try fileManager.removeItem(at: directory)
+    }
+
     private func cacheURL(for url: URL) -> URL {
         let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
             .map { String(format: "%02x", $0) }

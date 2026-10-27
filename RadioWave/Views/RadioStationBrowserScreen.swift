@@ -8,12 +8,20 @@ struct RadioStationBrowserScreen: View {
 
     @State private var searchText = ""
     @State private var category: RadioStationCategory = .recommended
+    @State private var searchDebounceTask: Task<Void, Never>?
+    @State private var displayedCount = 100
 
     private var favoriteOnly: Bool { category == .favorites }
 
     private var visibleStations: [Station] {
-        guard category == .recommended else { return library.stations }
-        return Array(library.stations.prefix(24))
+        switch category {
+        case .recommended:
+            return Array(library.stations.prefix(24))
+        case .favorites:
+            return library.stations
+        case .all:
+            return Array(library.stations.prefix(displayedCount))
+        }
     }
 
     var body: some View {
@@ -32,8 +40,15 @@ struct RadioStationBrowserScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
         .onAppear(perform: loadStations)
-        .onChange(of: searchText) { _, _ in loadStations() }
-        .onChange(of: category) { _, _ in loadStations() }
+        .onChange(of: searchText) { _, _ in
+            displayedCount = 100
+            debounceSearch()
+        }
+        .onChange(of: category) { _, _ in
+            displayedCount = 100
+            loadStations()
+        }
+        .onDisappear { searchDebounceTask?.cancel() }
     }
 
     private var header: some View {
@@ -42,10 +57,14 @@ struct RadioStationBrowserScreen: View {
             Text("电台列表")
                 .font(.system(size: 20, weight: .bold))
             Spacer()
-            if library.isLoading || library.isRefreshing {
-                ProgressView().controlSize(.small)
-            } else if !favoriteOnly {
-                RadioIconButton(systemName: "arrow.clockwise", label: "刷新电台", action: refreshStations)
+            if library.isLoading || library.isRefreshing || library.isFiltering {
+                if let percentage = library.syncProgressPercentage, library.isLoading || library.isRefreshing {
+                    Text("\(percentage)%")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
             }
         }
         .frame(height: 36)
@@ -55,8 +74,15 @@ struct RadioStationBrowserScreen: View {
     private var stationContent: some View {
         if library.isLoading && library.stations.isEmpty {
             VStack(spacing: 12) {
-                ProgressView()
-                Text("正在载入电台…")
+                if let progress = library.syncProgressFraction {
+                    ProgressView(value: progress)
+                        .frame(width: 180)
+                    Text("正在缓存电台 · \(library.syncProgressPercentage ?? 0)%")
+                } else {
+                    ProgressView()
+                    Text("正在载入电台…")
+                }
+                Text("已获取 \(library.syncProgress.formatted()) 个")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -68,6 +94,13 @@ struct RadioStationBrowserScreen: View {
                 LazyVStack(spacing: 5) {
                     ForEach(visibleStations) { station in
                         stationRow(station)
+                    }
+                    if category == .all, visibleStations.count < library.stations.count {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.vertical, 12)
+                            .frame(maxWidth: .infinity)
+                            .onAppear(perform: loadNextPage)
                     }
                 }
                 .padding(.bottom, 16)
@@ -113,10 +146,29 @@ struct RadioStationBrowserScreen: View {
     }
 
     private func loadStations() {
+        searchDebounceTask?.cancel()
         library.show(
             search: StationSearch(query: searchText),
             favoritesOnly: favoriteOnly
         )
+    }
+
+    private func debounceSearch() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(220))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            loadStations()
+        }
+    }
+
+    private func loadNextPage() {
+        guard displayedCount < library.stations.count else { return }
+        displayedCount = min(displayedCount + 100, library.stations.count)
     }
 
     private func refreshStations() {

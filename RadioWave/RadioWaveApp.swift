@@ -25,7 +25,7 @@ struct RadioWaveApp: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            RadioSettingsView()
+            RadioSettingsView(library: library)
         }
     }
 }

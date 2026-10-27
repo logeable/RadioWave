@@ -4,6 +4,7 @@ struct RadioPlayerScreen: View {
     @ObservedObject var player: RadioPlayerViewModel
     @ObservedObject var library: RadioLibraryViewModel
     let onShowStations: () -> Void
+    @Environment(\.openSettings) private var openSettings
 
     private var stationInfo: RadioStationInfo? {
         player.currentStation.map(RadioStationInfo.init(station:))
@@ -15,11 +16,7 @@ struct RadioPlayerScreen: View {
 
             Spacer(minLength: 24)
 
-            if let station = player.currentStation, let stationInfo {
-                playerContent(station: station, info: stationInfo)
-            } else {
-                noStationContent
-            }
+            playerSurface
 
             Spacer(minLength: 28)
         }
@@ -29,31 +26,76 @@ struct RadioPlayerScreen: View {
         .background(Color.clear)
     }
 
+    @ViewBuilder
+    private var playerSurface: some View {
+        Group {
+            if let station = player.currentStation, let stationInfo {
+                playerContent(station: station, info: stationInfo)
+            } else {
+                noStationContent
+            }
+        }
+        .frame(maxWidth: 460)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 18)
+        .background {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(.ultraThinMaterial.opacity(0.24))
+                .mask {
+                    RadialGradient(
+                        stops: [
+                            .init(color: .black.opacity(0.72), location: 0),
+                            .init(color: .black.opacity(0.54), location: 0.58),
+                            .init(color: .black.opacity(0.20), location: 0.86),
+                            .init(color: .clear, location: 1)
+                        ],
+                        center: .center,
+                        startRadius: 72,
+                        endRadius: 330
+                    )
+                }
+        }
+    }
+
     private var header: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 4) {
             Spacer()
             RadioIconButton(systemName: "list.bullet", label: "打开电台列表", action: onShowStations)
+            RadioIconButton(systemName: "gearshape", label: "打开设置", action: { openSettings() })
         }
     }
 
     private func playerContent(station: Station, info: RadioStationInfo) -> some View {
         VStack(spacing: 13) {
             HStack(spacing: 14) {
-                MusicRhythmVisualizer(audioBands: player.audioBands, isActive: player.isPlaying)
+                MusicRhythmVisualizer(
+                    audioBands: player.audioBands,
+                    backgroundImage: player.generatedBackgroundImage,
+                    isActive: player.isPlaying
+                )
                 StationArtworkView(imageURL: info.artworkURL, size: 188)
                     .shadow(color: .black.opacity(0.13), radius: 20, y: 9)
-                MusicRhythmVisualizer(audioBands: player.audioBands, isActive: player.isPlaying)
+                MusicRhythmVisualizer(
+                    audioBands: player.audioBands,
+                    backgroundImage: player.generatedBackgroundImage,
+                    isActive: player.isPlaying
+                )
                     .scaleEffect(x: -1, y: 1)
             }
 
-            StationMetadataView(station: info, alignment: .center)
+            VStack(spacing: 5) {
+                StationMetadataView(
+                    station: info,
+                    alignment: .center,
+                    detailColor: Color.primary.opacity(0.82)
+                )
 
-            if let title = player.nowPlayingTitle, !title.isEmpty {
-                Label(title, systemImage: "music.note")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
+                if let title = player.nowPlayingTitle, !title.isEmpty {
+                    Label(title, systemImage: "music.note")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.primary.opacity(0.82))
+                        .lineLimit(1)
+                }
             }
 
             if let playbackError = player.playbackError {

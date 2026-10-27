@@ -27,6 +27,11 @@ final class StationCacheStore {
         persist()
     }
 
+    func clearDirectory() {
+        directory = nil
+        try? fileManager.removeItem(at: fileURL)
+    }
+
     private func persist() {
         do {
             try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)

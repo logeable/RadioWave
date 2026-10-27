@@ -188,22 +188,6 @@ struct StationBrowserView: View {
             HStack(spacing: 8) {
                 Text(dataStatus)
                     .font(.system(size: 10)).foregroundStyle(library.refreshMessage == nil ? RadioPalette.muted : RadioPalette.accent)
-                if !showingFavorites {
-                    Button(action: refreshCurrentList) {
-                        if library.isLoading || library.isRefreshing {
-                            ProgressView().controlSize(.small).frame(width: 24, height: 24)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(RadioPalette.ink)
-                                .frame(width: 24, height: 24)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(library.isLoading || library.isRefreshing)
-                    .help("刷新本地缓存的电台数据")
-                    .accessibilityLabel("刷新本地缓存的电台数据")
-                }
             }
         }
         .padding(.bottom, 8)

@@ -30,6 +30,10 @@ final class RadioPlayerViewModel: ObservableObject {
     private var playbackGeneration = UUID()
     private var playerTimeControlObservation: NSKeyValueObservation?
     private var playbackPreparationTask: Task<Void, Never>?
+    private var playbackRecoveryTask: Task<Void, Never>?
+    private var playbackItemNotificationObservers: [NSObjectProtocol] = []
+    private var playbackRecoveryAttempts = 0
+    private var isUserPaused = false
     private var audioLevelPollingTask: Task<Void, Never>?
     private var imageGenerationTask: Task<Void, Never>?
     private var imageGenerationSettingsObserver: AnyCancellable?
@@ -112,6 +116,14 @@ final class RadioPlayerViewModel: ObservableObject {
     }
 
     func play(_ station: Station) {
+        playbackRecoveryTask?.cancel()
+        playbackRecoveryTask = nil
+        playbackRecoveryAttempts = 0
+        startPlayback(station)
+    }
+
+    private func startPlayback(_ station: Station) {
+        isUserPaused = false
         playbackPreparationTask?.cancel()
         imageGenerationTask?.cancel()
         stopAudioLevelPolling()
@@ -120,6 +132,7 @@ final class RadioPlayerViewModel: ObservableObject {
         player.pause()
         player.replaceCurrentItem(with: nil)
         playerItemStatusObservation = nil
+        removePlaybackItemNotificationObservers()
         icyMetadataReader.stop()
         currentStation = station
         playbackStore.saveCurrentStation(station)
@@ -154,9 +167,12 @@ final class RadioPlayerViewModel: ObservableObject {
                     self.isConnecting = false
                     self.isPlaying = false
                     self.playbackError = error?.localizedDescription ?? "无法连接到这个电台。"
+                    RadioWaveLog.error("Playback item failed for station \(station.stationuuid): \(error.map(RadioWaveLog.errorSummary) ?? "unknown error")", category: "Playback")
+                    self.schedulePlaybackRecovery(after: .seconds(2), reason: "playback item status failed")
                 }
             }
         }
+        observePlaybackItem(item, station: station, generation: generation)
         let output = AVPlayerItemMetadataOutput(identifiers: nil)
         let delegate = RadioStreamMetadataDelegate { [weak self] title in
             Task { @MainActor [weak self] in
@@ -204,13 +220,18 @@ final class RadioPlayerViewModel: ObservableObject {
             return
         }
         if isPlaying {
+            isUserPaused = true
+            playbackRecoveryTask?.cancel()
+            playbackRecoveryTask = nil
             player.pause()
             isPlaying = false
             isConnecting = false
             icyMetadataReader.stop()
-        } else if player.currentItem == nil {
+        } else if player.currentItem == nil || player.currentItem?.status == .failed {
+            isUserPaused = false
             play(currentStation)
         } else {
+            isUserPaused = false
             player.play()
             if let streamURL = currentStation.streamURL {
                 let generation = playbackGeneration
@@ -229,6 +250,9 @@ final class RadioPlayerViewModel: ObservableObject {
     private func handlePlayerTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
         switch status {
         case .playing:
+            playbackRecoveryTask?.cancel()
+            playbackRecoveryTask = nil
+            playbackRecoveryAttempts = 0
             isConnecting = false
             playbackError = nil
             isPlaying = true
@@ -239,16 +263,83 @@ final class RadioPlayerViewModel: ObservableObject {
             isPlaying = false
             checkpointAndPauseHistoryTiming()
             stopAudioLevelPolling()
+            schedulePlaybackRecovery(after: .seconds(20), reason: "playback remained in waiting state")
         case .paused:
             isConnecting = false
             isPlaying = false
             checkpointAndPauseHistoryTiming()
             stopAudioLevelPolling()
+            if !isUserPaused, player.currentItem != nil, playbackError == nil {
+                schedulePlaybackRecovery(after: .seconds(8), reason: "player paused unexpectedly")
+            }
         @unknown default:
             isConnecting = false
             isPlaying = false
             checkpointAndPauseHistoryTiming()
             stopAudioLevelPolling()
+        }
+    }
+
+    private func observePlaybackItem(_ item: AVPlayerItem, station: Station, generation: UUID) {
+        let stalledObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playbackGeneration == generation else { return }
+                RadioWaveLog.warning("Playback stalled for station \(station.stationuuid)", category: "Playback")
+                self.schedulePlaybackRecovery(after: .seconds(8), reason: "playback stalled")
+            }
+        }
+        let failedObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] notification in
+            let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            Task { @MainActor [weak self] in
+                guard let self, self.playbackGeneration == generation else { return }
+                RadioWaveLog.error("Playback ended with an error for station \(station.stationuuid): \(error.map(RadioWaveLog.errorSummary) ?? "unknown error")", category: "Playback")
+                self.schedulePlaybackRecovery(after: .seconds(2), reason: "playback item failed")
+            }
+        }
+        playbackItemNotificationObservers = [stalledObserver, failedObserver]
+    }
+
+    private func removePlaybackItemNotificationObservers() {
+        playbackItemNotificationObservers.forEach(NotificationCenter.default.removeObserver)
+        playbackItemNotificationObservers.removeAll()
+    }
+
+    private func schedulePlaybackRecovery(after delay: Duration, reason: String) {
+        guard let station = currentStation else { return }
+        playbackRecoveryTask?.cancel()
+        let generation = playbackGeneration
+        playbackRecoveryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.playbackGeneration == generation,
+                  self.currentStation?.stationuuid == station.stationuuid,
+                  self.player.timeControlStatus != .playing else { return }
+
+            guard self.playbackRecoveryAttempts < 3 else {
+                self.isConnecting = false
+                self.isPlaying = false
+                self.playbackError = "连接中断，请点击播放按钮重试。"
+                RadioWaveLog.error("Playback recovery exhausted for station \(station.stationuuid)", category: "Playback")
+                self.playbackRecoveryTask = nil
+                return
+            }
+
+            self.playbackRecoveryAttempts += 1
+            RadioWaveLog.warning("Reconnecting to station \(station.stationuuid), attempt \(self.playbackRecoveryAttempts) (\(reason))", category: "Playback")
+            self.startPlayback(station)
+            self.playbackRecoveryTask = nil
         }
     }
 

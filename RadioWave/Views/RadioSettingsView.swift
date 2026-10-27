@@ -2,10 +2,14 @@ import ServiceManagement
 import SwiftUI
 
 struct RadioSettingsView: View {
+    @ObservedObject var library: RadioLibraryViewModel
     @AppStorage("RadioWave.launchAtLogin") private var launchAtLogin = false
     @AppStorage("RadioWave.autoplayOnLaunch") private var autoplayOnLaunch = false
     @StateObject private var imageGeneration = ImageGenerationService.shared
     @State private var loginItemError: String?
+    @State private var iconCacheCount = 0
+    @State private var backgroundCacheCount = 0
+    @State private var cacheMessage: String?
 
     var body: some View {
         Form {
@@ -98,6 +102,59 @@ struct RadioSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("缓存") {
+                CacheManagementRow(
+                    title: "电台图标",
+                    detail: "已缓存 \(iconCacheCount) 个",
+                    symbol: "photo",
+                    buttonTitle: "清空",
+                    action: clearIconCache
+                )
+
+                CacheManagementRow(
+                    title: "曲目背景",
+                    detail: "已缓存 \(backgroundCacheCount) 张（最多 100 张）",
+                    symbol: "music.note",
+                    buttonTitle: "清空",
+                    action: clearBackgroundCache
+                )
+
+                LabeledContent {
+                    HStack(spacing: 6) {
+                        Text("已缓存 \(library.cachedStationCount) 个电台")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
+                        if library.isLoading || library.isRefreshing {
+                            if let progress = library.syncProgressFraction {
+                                ProgressView(value: progress)
+                                    .frame(width: 42)
+                            } else {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(library.syncProgressPercentage.map { "\($0)%" } ?? "准备中")
+                                .font(.footnote.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Button("重新缓存", action: library.recacheStations)
+                                .controlSize(.small)
+                            Button("清空", action: clearStationCache)
+                                .controlSize(.small)
+                        }
+                    }
+                } label: {
+                    Label("电台数据", systemImage: "dot.radiowaves.left.and.right")
+                }
+
+                if let cacheMessage {
+                    Text(cacheMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if let loginItemError {
                 Text(loginItemError)
                     .font(.footnote)
@@ -106,15 +163,46 @@ struct RadioSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(20)
-        .frame(width: 520, height: 500)
+        .frame(width: 520, height: 680)
         .navigationTitle("设置")
         .onAppear {
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
         .task {
+            iconCacheCount = await StationIconCache.shared.cachedImageCount()
+            backgroundCacheCount = await imageGeneration.cachedBackgroundCount()
             guard !imageGeneration.baseURL.isEmpty else { return }
             await imageGeneration.refreshModels()
         }
+    }
+
+    private func clearIconCache() {
+        Task {
+            do {
+                try await StationIconCache.shared.clear()
+                iconCacheCount = 0
+                cacheMessage = "已清空电台图标缓存。"
+            } catch {
+                cacheMessage = "清空电台图标缓存失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func clearBackgroundCache() {
+        Task {
+            do {
+                try await imageGeneration.clearBackgroundCache()
+                backgroundCacheCount = 0
+                cacheMessage = "已清空曲目背景缓存。"
+            } catch {
+                cacheMessage = "清空曲目背景缓存失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func clearStationCache() {
+        library.clearStationCache()
+        cacheMessage = "已清空电台数据缓存；收藏内容未受影响。"
     }
 
     private var loginItemBinding: Binding<Bool> {
@@ -135,5 +223,27 @@ struct RadioSettingsView: View {
                 }
             }
         )
+    }
+}
+
+private struct CacheManagementRow: View {
+    let title: String
+    let detail: String
+    let symbol: String
+    let buttonTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        LabeledContent {
+            HStack(spacing: 10) {
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button(buttonTitle, action: action)
+                    .controlSize(.small)
+            }
+        } label: {
+            Label(title, systemImage: symbol)
+        }
     }
 }

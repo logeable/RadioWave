@@ -35,8 +35,16 @@ struct StationRowView: View {
             )
         }
         .padding(9)
-        .background(isCurrent ? RadioUIStyle.accent.opacity(0.09) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: RadioUIStyle.cornerMedium))
+        .background(
+            .ultraThinMaterial.opacity(isCurrent ? 0.38 : 0.24),
+            in: RoundedRectangle(cornerRadius: RadioUIStyle.cornerMedium)
+        )
+        .overlay {
+            if isCurrent {
+                RoundedRectangle(cornerRadius: RadioUIStyle.cornerMedium)
+                    .fill(RadioUIStyle.accent.opacity(0.07))
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: RadioUIStyle.cornerMedium))
         .accessibilityElement(children: .contain)
     }
