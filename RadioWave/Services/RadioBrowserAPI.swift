@@ -5,11 +5,11 @@ final class RadioBrowserAPI {
     private let userAgent = "RadioWave/1.0 (personal macOS radio player)"
     private let pageSize = 5_000
 
-    func fetchAllStations(progress: @escaping @MainActor (Int, Int?) -> Void) async throws -> [Station] {
+    nonisolated func fetchAllStations(progress: @escaping @MainActor (Int, Int?) -> Void) async throws -> [Station] {
         var stations: [Station] = []
         var offset = 0
         let expectedCount = await fetchExpectedStationCount()
-        progress(0, expectedCount)
+        await progress(0, expectedCount)
 
         while true {
             try Task.checkCancellation()
@@ -33,7 +33,7 @@ final class RadioBrowserAPI {
             }
             let page = try JSONDecoder().decode([Station].self, from: data)
             stations.append(contentsOf: page)
-            progress(stations.count, expectedCount)
+            await progress(stations.count, expectedCount)
 
             guard page.count == pageSize else { break }
             offset += page.count
@@ -46,7 +46,7 @@ final class RadioBrowserAPI {
         return uniqueStations.values.sorted { ($0.clickcount ?? 0) > ($1.clickcount ?? 0) }
     }
 
-    private func fetchExpectedStationCount() async -> Int? {
+    nonisolated private func fetchExpectedStationCount() async -> Int? {
         var request = URLRequest(url: apiRoot.appending(path: "/json/stats"))
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 10

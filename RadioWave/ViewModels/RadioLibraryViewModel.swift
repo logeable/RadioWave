@@ -8,6 +8,7 @@ final class RadioLibraryViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isRefreshing = false
     @Published private(set) var isFiltering = false
+    @Published private(set) var isChoosingRandomStation = false
     @Published private(set) var syncProgress = 0
     @Published private(set) var syncProgressTotal: Int?
     @Published private(set) var errorMessage: String?
@@ -38,6 +39,10 @@ final class RadioLibraryViewModel: ObservableObject {
     private var filterWorker: Task<[Station], Never>?
     private var filterTask: Task<Void, Never>?
     private var filterGeneration = UUID()
+    private var filterOptionsWorker: Task<StationFilterOptions, Never>?
+    private var filterOptionsTask: Task<Void, Never>?
+    private var filterOptionsGeneration = UUID()
+    private var pendingRandomStationRequests: [(excluding: String?, completion: (Station?) -> Void)] = []
 
     init(api: RadioBrowserAPI,
          cacheStore: StationCacheStore,
@@ -98,6 +103,17 @@ final class RadioLibraryViewModel: ObservableObject {
         synchronizeDirectory()
     }
 
+    func requestRandomStation(excluding stationID: String?, completion: @escaping (Station?) -> Void) {
+        if !allStations.isEmpty {
+            completion(randomStation(in: allStations, excluding: stationID))
+            return
+        }
+
+        pendingRandomStationRequests.append((excluding: stationID, completion: completion))
+        isChoosingRandomStation = true
+        synchronizeDirectory()
+    }
+
     private func synchronizeDirectory() {
         guard syncTask == nil else { return }
         isLoading = allStations.isEmpty
@@ -128,16 +144,35 @@ final class RadioLibraryViewModel: ObservableObject {
                 applyCurrentFilter()
                 syncProgress = downloadedStations.count
                 syncProgressTotal = downloadedStations.count
+                completeRandomStationRequests(using: downloadedStations)
             } catch is CancellationError {
+                completeRandomStationRequests(using: nil)
                 return
             } catch {
                 guard !Task.isCancelled else { return }
+                completeRandomStationRequests(using: nil)
                 if allStations.isEmpty {
                     errorMessage = "暂时无法加载电台，请检查网络后重试。"
                 } else {
                     refreshMessage = "刷新失败，继续显示本地缓存"
                 }
             }
+        }
+    }
+
+    private func randomStation(in stations: [Station], excluding stationID: String?) -> Station? {
+        let candidates = stations.filter { $0.id != stationID }
+        return (candidates.isEmpty ? stations : candidates).randomElement()
+    }
+
+    private func completeRandomStationRequests(using stations: [Station]?) {
+        guard !pendingRandomStationRequests.isEmpty else { return }
+        let requests = pendingRandomStationRequests
+        pendingRandomStationRequests.removeAll()
+        isChoosingRandomStation = false
+
+        for request in requests {
+            request.completion(stations.flatMap { randomStation(in: $0, excluding: request.excluding) })
         }
     }
 
@@ -198,7 +233,9 @@ final class RadioLibraryViewModel: ObservableObject {
 
         switch search.sort {
         case .popular:
-            results.sort { ($0.clickcount ?? 0) > ($1.clickcount ?? 0) }
+            // The directory is already stored in popularity order. Preserve it to avoid
+            // sorting a large match set for every keystroke, especially during IME input.
+            break
         case .name:
             results.sort { $0.safeName.localizedStandardCompare($1.safeName) == .orderedAscending }
         case .bitrate:
@@ -208,24 +245,41 @@ final class RadioLibraryViewModel: ObservableObject {
     }
 
     private func updateFilterOptions() {
-        countryOptions = makeOptions(from: allStations) { station in
-            [station.country?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""]
+        filterOptionsWorker?.cancel()
+        filterOptionsTask?.cancel()
+        let generation = UUID()
+        filterOptionsGeneration = generation
+        let source = allStations
+        let worker = Task.detached(priority: .utility) {
+            Self.makeFilterOptions(from: source)
         }
-        tagOptions = makeOptions(from: allStations) { station in
-            station.tags?.components(separatedBy: ",") ?? []
-        }
-        languageOptions = makeOptions(from: allStations) { station in
-            station.language?.components(separatedBy: ",") ?? []
-        }
-        codecOptions = makeOptions(from: allStations) { station in
-            [station.codec ?? ""]
+        filterOptionsWorker = worker
+        filterOptionsTask = Task { @MainActor [weak self] in
+            let options = await worker.value
+            guard let self, self.filterOptionsGeneration == generation else { return }
+            self.countryOptions = options.countries
+            self.tagOptions = options.tags
+            self.languageOptions = options.languages
+            self.codecOptions = options.codecs
+            self.filterOptionsWorker = nil
+            self.filterOptionsTask = nil
         }
     }
 
-    private func makeOptions(from stations: [Station], values: (Station) -> [String]) -> [StationFilterOption] {
+    nonisolated private static func makeFilterOptions(from stations: [Station]) -> StationFilterOptions {
+        StationFilterOptions(
+            countries: makeOptions(from: stations) { [$0.country?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""] },
+            tags: makeOptions(from: stations) { $0.tags?.components(separatedBy: ",") ?? [] },
+            languages: makeOptions(from: stations) { $0.language?.components(separatedBy: ",") ?? [] },
+            codecs: makeOptions(from: stations) { [$0.codec ?? ""] }
+        )
+    }
+
+    nonisolated private static func makeOptions(from stations: [Station], values: (Station) -> [String]) -> [StationFilterOption] {
         var labels: [String: String] = [:]
         var counts: [String: Int] = [:]
-        for station in stations {
+        for (index, station) in stations.enumerated() {
+            if index.isMultiple(of: 256), Task.isCancelled { return [] }
             let uniqueValues = Set(values(station).compactMap { rawValue -> String? in
                 let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 return value.isEmpty ? nil : value
@@ -252,4 +306,11 @@ final class RadioLibraryViewModel: ObservableObject {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare(soughtValue) == .orderedSame
         } ?? false
     }
+}
+
+private struct StationFilterOptions: Sendable {
+    let countries: [StationFilterOption]
+    let tags: [StationFilterOption]
+    let languages: [StationFilterOption]
+    let codecs: [StationFilterOption]
 }

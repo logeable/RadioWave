@@ -60,8 +60,27 @@ struct RadioPlayerScreen: View {
     private var header: some View {
         HStack(spacing: 4) {
             Spacer()
+            if library.isChoosingRandomStation {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 34, height: 34)
+                    .help("正在准备随机电台")
+            } else {
+                RadioIconButton(
+                    systemName: "shuffle",
+                    label: "随机播放电台",
+                    action: playRandomStation
+                )
+            }
             RadioIconButton(systemName: "list.bullet", label: "打开电台列表", action: onShowStations)
             RadioIconButton(systemName: "gearshape", label: "打开设置", action: { openSettings() })
+        }
+    }
+
+    private func playRandomStation() {
+        library.requestRandomStation(excluding: player.currentStation?.id) { station in
+            guard let station else { return }
+            player.play(station)
         }
     }
 

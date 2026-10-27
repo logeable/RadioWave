@@ -172,7 +172,7 @@ struct StationSearch: Hashable, Sendable {
     }
 }
 
-struct StationFilterOption: Hashable, Identifiable {
+struct StationFilterOption: Hashable, Identifiable, Sendable {
     let value: String
     let count: Int
 

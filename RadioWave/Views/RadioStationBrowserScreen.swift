@@ -157,7 +157,7 @@ struct RadioStationBrowserScreen: View {
         searchDebounceTask?.cancel()
         searchDebounceTask = Task { @MainActor in
             do {
-                try await Task.sleep(for: .milliseconds(220))
+                try await Task.sleep(for: .milliseconds(400))
             } catch {
                 return
             }
