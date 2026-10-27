@@ -12,10 +12,12 @@ struct StationMetadataView: View {
                 .font(.system(size: compact ? 13 : 20, weight: .semibold))
                 .lineLimit(1)
                 .foregroundStyle(.primary)
+                .textSelection(.enabled)
             Text(station.detail)
                 .font(.system(size: compact ? 10 : 12))
                 .lineLimit(1)
                 .foregroundStyle(detailColor)
+                .textSelection(.enabled)
         }
         .accessibilityElement(children: .combine)
     }

@@ -95,6 +95,7 @@ struct RadioPlayerScreen: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Color.primary.opacity(0.82))
                         .lineLimit(1)
+                        .textSelection(.enabled)
                 }
             }
 
