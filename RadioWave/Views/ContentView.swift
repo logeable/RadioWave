@@ -29,6 +29,13 @@ struct ContentView: View {
                     onShowStations: { navigation.showingStations = true }
                 )
                 .transition(.move(edge: .leading).combined(with: .opacity))
+                .focusable()
+                .focusEffectDisabled()
+                .onKeyPress(.space) {
+                    guard player.currentStation != nil else { return .ignored }
+                    player.togglePlayback()
+                    return .handled
+                }
             }
         }
         .animation(.easeInOut(duration: 0.22), value: navigation.showingStations)
@@ -45,13 +52,6 @@ struct ContentView: View {
             withAnimation(.easeInOut(duration: 1.2)) {
                 backgroundImageLayers = image.map { [BackgroundImageLayer(image: $0)] } ?? []
             }
-        }
-        .focusable()
-        .focusEffectDisabled()
-        .onKeyPress(.space) {
-            guard player.currentStation != nil else { return .ignored }
-            player.togglePlayback()
-            return .handled
         }
     }
 
