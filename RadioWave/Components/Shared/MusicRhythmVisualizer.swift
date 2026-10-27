@@ -42,7 +42,7 @@ struct MusicRhythmVisualizer: View {
             }
         }
         .frame(height: 126)
-        .animation(.easeOut(duration: 0.07), value: audioBands)
+        .animation(.easeOut(duration: 0.045), value: audioBands)
         .onAppear(perform: updateColorPalette)
         .onChange(of: backgroundImage.map { ObjectIdentifier($0) }) { _, _ in
             updateColorPalette()

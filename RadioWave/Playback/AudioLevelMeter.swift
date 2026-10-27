@@ -12,6 +12,7 @@ struct AudioBandLevels: Equatable {
 
 final class AudioLevelMeter: @unchecked Sendable {
     private let levels = OSAllocatedUnfairLock(initialState: AudioBandLevels.zero)
+    private let diagnosticState = OSAllocatedUnfairLock(initialState: DiagnosticState())
     private var isFloat = true
     private var bitsPerChannel: UInt32 = 32
     private var isNonInterleaved = false
@@ -23,8 +24,15 @@ final class AudioLevelMeter: @unchecked Sendable {
         levels.withLock { $0 }
     }
 
-    func reset() {
-        levels.withLock { $0 = .zero }
+    func reset(stationUUID: String) {
+        levels.withLock {
+            $0.bass = 0
+            $0.mid = 0
+            $0.treble = 0
+        }
+        diagnosticState.withLock {
+            $0 = DiagnosticState(stationUUID: stationUUID)
+        }
     }
 
     func prepare(format: AudioStreamBasicDescription) {
@@ -35,6 +43,11 @@ final class AudioLevelMeter: @unchecked Sendable {
         let channelCount = max(Int(format.mChannelsPerFrame), 1)
         bassFilterStates = Array(repeating: 0, count: channelCount)
         midFilterStates = Array(repeating: 0, count: channelCount)
+        let stationUUID = diagnosticState.withLock { $0.stationUUID }
+        RadioWaveLog.info(
+            "Audio meter input prepared for station \(stationUUID), sampleRate=\(Int(sampleRate)) Hz, channels=\(channelCount), encoding=\(isFloat ? "float" : "integer")/\(bitsPerChannel)-bit, interleaved=\(!isNonInterleaved)",
+            category: "PlaybackVisualization"
+        )
     }
 
     func update(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
@@ -86,6 +99,31 @@ final class AudioLevelMeter: @unchecked Sendable {
             treble: sqrt(trebleEnergy / count)
         )
         levels.withLock { $0 = nextLevels }
+
+        let stationUUID = diagnosticState.withLock { state -> String? in
+            guard !state.didLogFirstBuffer else { return nil }
+            state.didLogFirstBuffer = true
+            return state.stationUUID
+        }
+        if let stationUUID {
+            RadioWaveLog.info(
+                "Audio meter received first buffer for station \(stationUUID), frames=\(frameCount), bands=\(String(format: "%.4f/%.4f/%.4f", nextLevels.bass, nextLevels.mid, nextLevels.treble))",
+                category: "PlaybackVisualization"
+            )
+        }
+    }
+
+    func reportSourceAudioFailure(status: OSStatus) {
+        let stationUUID = diagnosticState.withLock { state -> String? in
+            guard !state.didLogSourceFailure else { return nil }
+            state.didLogSourceFailure = true
+            return state.stationUUID
+        }
+        guard let stationUUID else { return }
+        RadioWaveLog.warning(
+            "Audio tap could not read source audio for station \(stationUUID), OSStatus=\(status)",
+            category: "PlaybackVisualization"
+        )
     }
 
     private func sampleValue(in data: UnsafeMutableRawPointer, at index: Int) -> Double {
@@ -101,6 +139,12 @@ final class AudioLevelMeter: @unchecked Sendable {
         default:
             return 0
         }
+    }
+
+    private struct DiagnosticState {
+        var stationUUID = "unknown"
+        var didLogFirstBuffer = false
+        var didLogSourceFailure = false
     }
 }
 
@@ -136,6 +180,10 @@ enum AudioLevelTap {
             flagsOut.pointee = sourceFlags
 
             guard status == noErr else {
+                let meter = Unmanaged<AudioLevelMeter>
+                    .fromOpaque(MTAudioProcessingTapGetStorage(tap))
+                    .takeUnretainedValue()
+                meter.reportSourceAudioFailure(status: status)
                 framesOut.pointee = 0
                 return
             }

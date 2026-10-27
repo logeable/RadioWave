@@ -14,11 +14,14 @@ final class RadioPlayerViewModel: ObservableObject {
     @Published var volume = 1.0 {
         didSet {
             player.volume = Float(volume)
+            directStreamPlayer?.setVolume(Float(volume))
             if volume > 0 { lastNonMutedVolume = volume }
         }
     }
 
     private let player = AVPlayer()
+    private var directStreamPlayer: LivePCMRadioPlayer?
+    private var directPlaybackHasStarted = false
     private let api: RadioBrowserAPI
     private let playbackStore: PlaybackStateStore
     private let imageGeneration = ImageGenerationService.shared
@@ -32,6 +35,7 @@ final class RadioPlayerViewModel: ObservableObject {
     private var playbackPreparationTask: Task<Void, Never>?
     private var playbackRecoveryTask: Task<Void, Never>?
     private var playbackItemNotificationObservers: [NSObjectProtocol] = []
+    private var visualizationReadyProbeGeneration: UUID?
     private var playbackRecoveryAttempts = 0
     private var isUserPaused = false
     private var audioLevelPollingTask: Task<Void, Never>?
@@ -127,8 +131,11 @@ final class RadioPlayerViewModel: ObservableObject {
         playbackPreparationTask?.cancel()
         imageGenerationTask?.cancel()
         stopAudioLevelPolling()
-        audioLevelMeter.reset()
+        audioLevelMeter.reset(stationUUID: station.stationuuid)
         finishActiveHistorySession()
+        directStreamPlayer?.stop()
+        directStreamPlayer = nil
+        directPlaybackHasStarted = false
         player.pause()
         player.replaceCurrentItem(with: nil)
         playerItemStatusObservation = nil
@@ -146,6 +153,10 @@ final class RadioPlayerViewModel: ObservableObject {
             playbackError = "这个电台没有可用的播放地址。"
             return
         }
+        RadioWaveLog.info(
+            "Starting station \(station.stationuuid), directoryCodec=\(station.codec ?? "unknown"), directoryBitrate=\(station.bitrate.map(String.init) ?? "unknown") kbps, stream=\(Self.redactedStreamAddress(streamURL))",
+            category: "PlaybackVisualization"
+        )
         isConnecting = true
         icyMetadataReader.start(url: streamURL, stationUUID: station.stationuuid) { [weak self] title in
             guard let self, self.playbackGeneration == generation else { return }
@@ -153,6 +164,69 @@ final class RadioPlayerViewModel: ObservableObject {
         }
         metadataOutput = nil
         metadataDelegate = nil
+
+        if Self.shouldUseDirectPCM(for: station, streamURL: streamURL) {
+            startDirectPCMPlayback(station: station, streamURL: streamURL, generation: generation)
+            return
+        }
+
+        startAVPlayerPlayback(station: station, streamURL: streamURL, generation: generation)
+    }
+
+    private static func shouldUseDirectPCM(for station: Station, streamURL: URL) -> Bool {
+        let pathExtension = streamURL.pathExtension.lowercased()
+        guard !["m3u8", "m3u", "pls", "ogg", "opus"].contains(pathExtension) else { return false }
+        let codec = (station.codec ?? "").lowercased()
+        return codec.contains("mp3") || codec.contains("mpeg") || codec.contains("aac")
+    }
+
+    private func startDirectPCMPlayback(station: Station, streamURL: URL, generation: UUID) {
+        let directPlayer = LivePCMRadioPlayer(
+            stationUUID: station.stationuuid,
+            codecHint: station.codec ?? "",
+            meter: audioLevelMeter,
+            onPlaybackStarted: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.playbackGeneration == generation,
+                          self.directStreamPlayer != nil else { return }
+                    self.directPlaybackHasStarted = true
+                    guard !self.isUserPaused else { return }
+                    self.isConnecting = false
+                    self.isPlaying = true
+                    self.playbackError = nil
+                    self.playbackRecoveryAttempts = 0
+                    self.beginOrResumeHistorySession()
+                    self.startAudioLevelPolling()
+                    self.api.recordClick(for: station)
+                }
+            },
+            onFailure: { [weak self] message, hasProducedAudio in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.playbackGeneration == generation,
+                          self.directStreamPlayer != nil else { return }
+                    RadioWaveLog.warning("Direct PCM playback failed for station \(station.stationuuid): \(message)", category: "Playback")
+                    if !hasProducedAudio {
+                        self.directStreamPlayer?.stop()
+                        self.directStreamPlayer = nil
+                        self.startAVPlayerPlayback(station: station, streamURL: streamURL, generation: generation)
+                        return
+                    }
+                    self.isConnecting = false
+                    self.isPlaying = false
+                    self.checkpointAndPauseHistoryTiming()
+                    self.stopAudioLevelPolling()
+                    self.schedulePlaybackRecovery(after: .seconds(2), reason: "direct PCM stream failed")
+                }
+            }
+        )
+        directStreamPlayer = directPlayer
+        directPlayer.setVolume(Float(volume))
+        directPlayer.start(url: streamURL)
+    }
+
+    private func startAVPlayerPlayback(station: Station, streamURL: URL, generation: UUID) {
 
         let asset = AVURLAsset(url: streamURL)
         let item = AVPlayerItem(asset: asset)
@@ -163,6 +237,13 @@ final class RadioPlayerViewModel: ObservableObject {
                 guard let self,
                       self.player.currentItem === observedItem,
                       self.playbackGeneration == generation else { return }
+                if status == .readyToPlay {
+                    await self.logReadyAudioTrackProbe(
+                        for: observedItem,
+                        station: station,
+                        generation: generation
+                    )
+                }
                 if status == .failed {
                     self.isConnecting = false
                     self.isPlaying = false
@@ -198,12 +279,29 @@ final class RadioPlayerViewModel: ObservableObject {
                   !Task.isCancelled,
                   self.playbackGeneration == generation else { return }
 
+            var trackDetails: [String] = []
+            for track in audioTracks {
+                let descriptions = (try? await track.load(.formatDescriptions)) ?? []
+                let enabled = (try? await track.load(.isEnabled)) ?? false
+                let formats = descriptions.map { Self.fourCharacterCode(CMFormatDescriptionGetMediaSubType($0)) }
+                trackDetails.append(
+                    "id=\(track.trackID), mediaType=\(track.mediaType.rawValue), enabled=\(enabled), formats=\(formats.isEmpty ? "unknown" : formats.joined(separator: ","))"
+                )
+            }
+            RadioWaveLog.info(
+                "Audio track probe for station \(station.stationuuid): count=\(audioTracks.count), tracks=[\(trackDetails.joined(separator: "; "))]",
+                category: "PlaybackVisualization"
+            )
+
             if let audioTrack = audioTracks.first {
                 do {
                     item.audioMix = try AudioLevelTap.makeMix(for: audioTrack, meter: self.audioLevelMeter)
+                    RadioWaveLog.info("Audio tap attached to station \(station.stationuuid), trackID=\(audioTrack.trackID)", category: "PlaybackVisualization")
                 } catch {
-                    RadioWaveLog.debug("Audio visualization tap unavailable: \(RadioWaveLog.errorSummary(error))", category: "Playback")
+                    RadioWaveLog.warning("Audio tap creation failed for station \(station.stationuuid): \(RadioWaveLog.errorSummary(error))", category: "PlaybackVisualization")
                 }
+            } else {
+                RadioWaveLog.warning("No audio track found for station \(station.stationuuid); visualization tap was not attached", category: "PlaybackVisualization")
             }
 
             self.player.replaceCurrentItem(with: item)
@@ -213,20 +311,135 @@ final class RadioPlayerViewModel: ObservableObject {
         }
     }
 
+    private func logReadyAudioTrackProbe(
+        for item: AVPlayerItem,
+        station: Station,
+        generation: UUID
+    ) async {
+        guard visualizationReadyProbeGeneration != generation else { return }
+        visualizationReadyProbeGeneration = generation
+
+        let itemAudioTrack = item.tracks
+            .compactMap(\.assetTrack)
+            .first { $0.mediaType == .audio }
+        if let itemAudioTrack {
+            if item.audioMix == nil {
+                do {
+                    item.audioMix = try AudioLevelTap.makeMix(for: itemAudioTrack, meter: audioLevelMeter)
+                    RadioWaveLog.info(
+                        "Audio tap attached from ready item track for station \(station.stationuuid), trackID=\(itemAudioTrack.trackID), mediaType=\(itemAudioTrack.mediaType.rawValue)",
+                        category: "PlaybackVisualization"
+                    )
+                } catch {
+                    RadioWaveLog.warning(
+                        "Audio tap creation failed for ready item track, station=\(station.stationuuid), trackID=\(itemAudioTrack.trackID): \(RadioWaveLog.errorSummary(error))",
+                        category: "PlaybackVisualization"
+                    )
+                }
+            } else {
+                RadioWaveLog.info(
+                    "Ready item already has an audio mix for station \(station.stationuuid), trackID=\(itemAudioTrack.trackID)",
+                    category: "PlaybackVisualization"
+                )
+            }
+        } else {
+            RadioWaveLog.warning(
+                "Ready item has no audio asset track for station \(station.stationuuid); itemTrackCount=\(item.tracks.count)",
+                category: "PlaybackVisualization"
+            )
+        }
+
+        do {
+            let assetTracks = try await item.asset.loadTracks(withMediaType: .audio)
+            guard player.currentItem === item, playbackGeneration == generation else { return }
+
+            var details: [String] = []
+            for track in assetTracks {
+                let descriptions = (try? await track.load(.formatDescriptions)) ?? []
+                let enabled = (try? await track.load(.isEnabled)) ?? false
+                let formats = descriptions.map { Self.fourCharacterCode(CMFormatDescriptionGetMediaSubType($0)) }
+                details.append(
+                    "id=\(track.trackID), mediaType=\(track.mediaType.rawValue), enabled=\(enabled), formats=\(formats.isEmpty ? "unknown" : formats.joined(separator: ","))"
+                )
+            }
+
+            var itemTrackDetails: [String] = []
+            for itemTrack in item.tracks {
+                guard let assetTrack = itemTrack.assetTrack else {
+                    itemTrackDetails.append("assetTrack=unavailable, enabled=\(itemTrack.isEnabled)")
+                    continue
+                }
+                let descriptions = (try? await assetTrack.load(.formatDescriptions)) ?? []
+                let formats = descriptions.map { Self.fourCharacterCode(CMFormatDescriptionGetMediaSubType($0)) }
+                itemTrackDetails.append(
+                    "assetTrackID=\(assetTrack.trackID), mediaType=\(assetTrack.mediaType.rawValue), enabled=\(itemTrack.isEnabled), formats=\(formats.isEmpty ? "unknown" : formats.joined(separator: ","))"
+                )
+            }
+            RadioWaveLog.info(
+                "Ready audio track probe for station \(station.stationuuid): itemStatus=\(item.status.rawValue), itemTracks=\(item.tracks.count), audioAssetTracks=\(assetTracks.count), assetTracks=[\(details.joined(separator: "; "))], itemTrackDetails=[\(itemTrackDetails.joined(separator: "; "))]",
+                category: "PlaybackVisualization"
+            )
+        } catch {
+            RadioWaveLog.warning(
+                "Ready audio track probe failed for station \(station.stationuuid), itemStatus=\(item.status.rawValue): \(RadioWaveLog.errorSummary(error))",
+                category: "PlaybackVisualization"
+            )
+        }
+    }
+
+    private static func redactedStreamAddress(_ url: URL) -> String {
+        let address = "\(url.scheme ?? "unknown")://\(url.host ?? "unknown")"
+        let pathExtension = url.pathExtension
+        return pathExtension.isEmpty ? address : "\(address) (extension=\(pathExtension))"
+    }
+
+    private static func fourCharacterCode(_ code: FourCharCode) -> String {
+        let bytes = [
+            UInt8((code >> 24) & 0xff),
+            UInt8((code >> 16) & 0xff),
+            UInt8((code >> 8) & 0xff),
+            UInt8(code & 0xff)
+        ]
+        let value = String(bytes: bytes, encoding: .macOSRoman)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? String(format: "0x%08x", code) : value
+    }
+
     func togglePlayback() {
         guard let currentStation else { return }
         if playbackError != nil {
             play(currentStation)
             return
         }
-        if isPlaying {
+        if isPlaying || isConnecting {
             isUserPaused = true
             playbackRecoveryTask?.cancel()
             playbackRecoveryTask = nil
-            player.pause()
+            if directStreamPlayer != nil {
+                directStreamPlayer?.pause()
+            } else {
+                player.pause()
+            }
             isPlaying = false
             isConnecting = false
+            checkpointAndPauseHistoryTiming()
+            stopAudioLevelPolling()
             icyMetadataReader.stop()
+        } else if let directStreamPlayer {
+            isUserPaused = false
+            directStreamPlayer.resume()
+            isConnecting = !directPlaybackHasStarted
+            isPlaying = directPlaybackHasStarted
+            if directPlaybackHasStarted {
+                beginOrResumeHistorySession()
+                startAudioLevelPolling()
+            }
+            let generation = playbackGeneration
+            if let streamURL = currentStation.streamURL {
+                icyMetadataReader.start(url: streamURL, stationUUID: currentStation.stationuuid) { [weak self] title in
+                    guard let self, self.playbackGeneration == generation else { return }
+                    self.receiveMetadata(title, source: "ICY")
+                }
+            }
         } else if player.currentItem == nil || player.currentItem?.status == .failed {
             isUserPaused = false
             play(currentStation)
@@ -248,6 +461,7 @@ final class RadioPlayerViewModel: ObservableObject {
     }
 
     private func handlePlayerTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
+        guard directStreamPlayer == nil else { return }
         switch status {
         case .playing:
             playbackRecoveryTask?.cancel()
@@ -325,7 +539,7 @@ final class RadioPlayerViewModel: ObservableObject {
             guard let self,
                   self.playbackGeneration == generation,
                   self.currentStation?.stationuuid == station.stationuuid,
-                  self.player.timeControlStatus != .playing else { return }
+                  self.directStreamPlayer == nil ? self.player.timeControlStatus != .playing : !self.isPlaying else { return }
 
             guard self.playbackRecoveryAttempts < 3 else {
                 self.isConnecting = false
@@ -350,17 +564,17 @@ final class RadioPlayerViewModel: ObservableObject {
                 guard let self else { return }
                 let measuredBands = self.audioLevelMeter.currentBands
                 let nextBands = AudioBandLevels(
-                    bass: max(self.normalizedBandLevel(measuredBands.bass), self.audioBands.bass * 0.88),
-                    mid: max(self.normalizedBandLevel(measuredBands.mid), self.audioBands.mid * 0.88),
-                    treble: max(self.normalizedBandLevel(measuredBands.treble), self.audioBands.treble * 0.88)
+                    bass: max(self.normalizedBandLevel(measuredBands.bass), self.audioBands.bass * 0.82),
+                    mid: max(self.normalizedBandLevel(measuredBands.mid), self.audioBands.mid * 0.82),
+                    treble: max(self.normalizedBandLevel(measuredBands.treble), self.audioBands.treble * 0.82)
                 )
-                if abs(self.audioBands.bass - nextBands.bass) > 0.006
-                    || abs(self.audioBands.mid - nextBands.mid) > 0.006
-                    || abs(self.audioBands.treble - nextBands.treble) > 0.006 {
+                if abs(self.audioBands.bass - nextBands.bass) > 0.002
+                    || abs(self.audioBands.mid - nextBands.mid) > 0.002
+                    || abs(self.audioBands.treble - nextBands.treble) > 0.002 {
                     self.audioBands = nextBands
                 }
                 do {
-                    try await Task.sleep(for: .milliseconds(40))
+                    try await Task.sleep(for: .milliseconds(20))
                 } catch {
                     return
                 }

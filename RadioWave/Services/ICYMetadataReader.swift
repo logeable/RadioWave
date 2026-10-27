@@ -7,16 +7,26 @@ final class ICYMetadataReader {
     private var pollingTask: Task<Void, Never>?
     private var activeRequest: ICYMetadataRequest?
     private var generation = UUID()
+    private var stationsWithLoggedResponse = Set<String>()
 
     func start(url: URL, stationUUID: String, onTitle: @escaping (String) -> Void) {
         stop()
         let requestGeneration = generation
+        let shouldLogResponse = stationsWithLoggedResponse.insert(stationUUID).inserted
 
-        pollingTask = Task { [weak self] in
+        pollingTask = Task { [weak self, shouldLogResponse] in
             guard let self else { return }
+            var shouldLogNextResponse = shouldLogResponse
 
             while !Task.isCancelled, self.generation == requestGeneration {
-                if let title = await self.fetchTitle(from: url, stationUUID: stationUUID, generation: requestGeneration),
+                let title = await self.fetchTitle(
+                    from: url,
+                    stationUUID: stationUUID,
+                    generation: requestGeneration,
+                    shouldLogResponse: shouldLogNextResponse
+                )
+                shouldLogNextResponse = false
+                if let title,
                    !Task.isCancelled,
                    self.generation == requestGeneration {
                     onTitle(title)
@@ -39,9 +49,12 @@ final class ICYMetadataReader {
         activeRequest = nil
     }
 
-    private func fetchTitle(from url: URL, stationUUID: String, generation requestGeneration: UUID) async -> String? {
+    private func fetchTitle(from url: URL,
+                            stationUUID: String,
+                            generation requestGeneration: UUID,
+                            shouldLogResponse: Bool) async -> String? {
         await withCheckedContinuation { continuation in
-            let request = ICYMetadataRequest(stationUUID: stationUUID) { [weak self] title in
+            let request = ICYMetadataRequest(stationUUID: stationUUID, shouldLogResponse: shouldLogResponse) { [weak self] title in
                 guard let self, self.generation == requestGeneration else {
                     continuation.resume(returning: nil)
                     return
@@ -57,6 +70,7 @@ final class ICYMetadataReader {
 
 private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
     private let stationUUID: String
+    private let shouldLogResponse: Bool
     private let onCompletion: (String?) -> Void
     private var session: URLSession?
     private var task: URLSessionDataTask?
@@ -67,8 +81,9 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
     private var emptyPacketCount = 0
     private var isCompleted = false
 
-    init(stationUUID: String, onCompletion: @escaping (String?) -> Void) {
+    init(stationUUID: String, shouldLogResponse: Bool, onCompletion: @escaping (String?) -> Void) {
         self.stationUUID = stationUUID
+        self.shouldLogResponse = shouldLogResponse
         self.onCompletion = onCompletion
     }
 
@@ -97,6 +112,13 @@ private final class ICYMetadataRequest: NSObject, URLSessionDataDelegate {
             completionHandler(.cancel)
             finish(with: nil)
             return
+        }
+
+        if shouldLogResponse {
+            RadioWaveLog.info(
+                "Stream response for station \(stationUUID): status=\(httpResponse.statusCode), contentType=\(httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown"), icyMetaInterval=\(httpResponse.value(forHTTPHeaderField: "icy-metaint") ?? "none"), server=\(httpResponse.value(forHTTPHeaderField: "Server") ?? "unknown"), contentLength=\(httpResponse.value(forHTTPHeaderField: "Content-Length") ?? "unknown")",
+                category: "PlaybackVisualization"
+            )
         }
 
         guard (200..<300).contains(httpResponse.statusCode),
