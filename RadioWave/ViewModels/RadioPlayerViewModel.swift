@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import Combine
 
 @MainActor
@@ -8,6 +9,7 @@ final class RadioPlayerViewModel: ObservableObject {
     @Published private(set) var isConnecting = false
     @Published private(set) var playbackError: String?
     @Published private(set) var nowPlayingTitle: String?
+    @Published private(set) var generatedBackgroundImage: NSImage?
     @Published private(set) var audioBands = AudioBandLevels.zero
     @Published var volume = 1.0 {
         didSet {
@@ -19,6 +21,7 @@ final class RadioPlayerViewModel: ObservableObject {
     private let player = AVPlayer()
     private let api: RadioBrowserAPI
     private let playbackStore: PlaybackStateStore
+    private let imageGeneration = ImageGenerationService.shared
     private let historyStore: PlaybackHistoryStore?
     private let icyMetadataReader = ICYMetadataReader()
     private var metadataOutput: AVPlayerItemMetadataOutput?
@@ -28,6 +31,9 @@ final class RadioPlayerViewModel: ObservableObject {
     private var playerTimeControlObservation: NSKeyValueObservation?
     private var playbackPreparationTask: Task<Void, Never>?
     private var audioLevelPollingTask: Task<Void, Never>?
+    private var imageGenerationTask: Task<Void, Never>?
+    private var imageGenerationSettingsObserver: AnyCancellable?
+    private var imageGenerationEnabledObserver: AnyCancellable?
     private let audioLevelMeter = AudioLevelMeter()
     private var activeHistorySessionID: UUID?
     private var accumulatedListeningSeconds: TimeInterval = 0
@@ -53,6 +59,40 @@ final class RadioPlayerViewModel: ObservableObject {
             historyStore = nil
             RadioWaveLog.error("Unable to open playback history: \(RadioWaveLog.errorSummary(error))", category: "PlaybackHistory")
         }
+        let imageGenerationSettings = [
+            imageGeneration.$baseURL.map { _ in () }.eraseToAnyPublisher(),
+            imageGeneration.$apiKey.map { _ in () }.eraseToAnyPublisher(),
+            imageGeneration.$selectedModel.map { _ in () }.eraseToAnyPublisher()
+        ]
+        imageGenerationSettingsObserver = Publishers.MergeMany(imageGenerationSettings)
+            .dropFirst(imageGenerationSettings.count)
+            .debounce(for: .milliseconds(800), scheduler: RunLoop.main)
+            .sink { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          let title = self.nowPlayingTitle,
+                          self.imageGeneration.isEnabled,
+                          self.imageGeneration.isConfigured else { return }
+                    self.generateBackground(for: title)
+                }
+            }
+        imageGenerationEnabledObserver = imageGeneration.$isEnabled
+            .dropFirst()
+            .sink { [weak self] isEnabled in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard isEnabled else {
+                        self.imageGenerationTask?.cancel()
+                        self.imageGenerationTask = nil
+                        self.generatedBackgroundImage = nil
+                        return
+                    }
+
+                    guard let title = self.nowPlayingTitle,
+                          self.imageGeneration.isConfigured else { return }
+                    self.generateBackground(for: title)
+                }
+            }
         currentStation = playbackStore.loadCurrentStation()
         player.volume = Float(volume)
         playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] observedPlayer, _ in
@@ -73,6 +113,8 @@ final class RadioPlayerViewModel: ObservableObject {
 
     func play(_ station: Station) {
         playbackPreparationTask?.cancel()
+        imageGenerationTask?.cancel()
+        generatedBackgroundImage = nil
         stopAudioLevelPolling()
         audioLevelMeter.reset()
         finishActiveHistorySession()
@@ -341,6 +383,25 @@ final class RadioPlayerViewModel: ObservableObject {
         let changed = nowPlayingTitle != title
         RadioWaveLog.debug("Metadata received from \(source), station=\(stationUUID), changed=\(changed)", category: "PlaybackMetadata")
         nowPlayingTitle = title
+        if changed {
+            generatedBackgroundImage = nil
+            generateBackground(for: title)
+        }
+    }
+
+    private func generateBackground(for title: String) {
+        guard imageGeneration.isEnabled, imageGeneration.isConfigured else { return }
+        imageGenerationTask?.cancel()
+        imageGenerationTask = Task { [weak self, imageGeneration] in
+            let image = await imageGeneration.generateBackground(for: title)
+            guard !Task.isCancelled,
+                  let self,
+                  self.nowPlayingTitle == title else { return }
+            if let image {
+                self.generatedBackgroundImage = image
+            }
+            self.imageGenerationTask = nil
+        }
     }
 }
 

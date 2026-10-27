@@ -26,7 +26,7 @@ struct RadioPlayerScreen: View {
         .padding(.horizontal, 32)
         .padding(.vertical, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RadioUIStyle.canvas)
+        .background(Color.clear)
     }
 
     private var header: some View {

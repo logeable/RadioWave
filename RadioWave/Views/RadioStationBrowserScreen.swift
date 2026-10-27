@@ -30,7 +30,7 @@ struct RadioStationBrowserScreen: View {
         .padding(.horizontal, 24)
         .padding(.top, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RadioUIStyle.canvas)
+        .background(Color.clear)
         .onAppear(perform: loadStations)
         .onChange(of: searchText) { _, _ in loadStations() }
         .onChange(of: category) { _, _ in loadStations() }
